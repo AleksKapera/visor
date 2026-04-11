@@ -1,12 +1,35 @@
+import { vi } from 'vitest';
+
 import {
   ACCESSIBILITY_ID,
   ANDROID_UIAUTOMATOR,
   formatDriverCreationError,
   parseTarget,
+  RealAppiumAdapter,
   resolveWebdriverConnectionTimeout,
   resolveTapMode,
   XPATH
 } from '../src/adapters.js';
+
+const webdriverMock = vi.hoisted(() => ({
+  remote: vi.fn()
+}));
+
+vi.mock('webdriverio', () => webdriverMock);
+
+function createFakeDriver() {
+  return {
+    execute: vi.fn(),
+    deleteSession: vi.fn(),
+    getWindowSize: vi.fn().mockResolvedValue({ width: 200, height: 400 }),
+    $: vi.fn(),
+    $$: vi.fn()
+  };
+}
+
+beforeEach(() => {
+  webdriverMock.remote.mockReset();
+});
 
 describe('adapter selector helpers', () => {
   it('uses accessibility id for plain selector', () => {
@@ -82,5 +105,37 @@ describe('adapter selector helpers', () => {
         process.env.VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS = previous;
       }
     }
+  });
+
+  it('passes iOS coordinate tap arguments as the Appium execute object', async () => {
+    const driver = createFakeDriver();
+    webdriverMock.remote.mockResolvedValue(driver);
+    const adapter = await RealAppiumAdapter.create(
+      'ios',
+      'http://127.0.0.1:4723',
+      'simulator-udid',
+      'com.example.app'
+    );
+
+    await adapter.tap({ x: 10, y: 20 });
+
+    expect(driver.execute).toHaveBeenCalledWith('mobile: tap', { x: 10, y: 20 });
+    await adapter.close();
+  });
+
+  it('passes Android coordinate tap arguments as the Appium execute object', async () => {
+    const driver = createFakeDriver();
+    webdriverMock.remote.mockResolvedValue(driver);
+    const adapter = await RealAppiumAdapter.create(
+      'android',
+      'http://127.0.0.1:4723',
+      'emulator-5554',
+      'com.example.app'
+    );
+
+    await adapter.tap({ x: 0.25, y: 0.5, normalized: true });
+
+    expect(driver.execute).toHaveBeenCalledWith('mobile: clickGesture', { x: 50, y: 200 });
+    await adapter.close();
   });
 });

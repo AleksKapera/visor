@@ -486,12 +486,12 @@ export class RealAppiumAdapter implements PlatformAdapter {
   private async tapPoint(x: number, y: number): Promise<void> {
     const driver = this.requireDriver() as any;
     if (this.platform === 'android') {
-      await driver.execute('mobile: clickGesture', [{ x, y }]);
+      await driver.execute('mobile: clickGesture', { x, y });
       return;
     }
 
     if (this.platform === 'ios') {
-      await driver.execute('mobile: tap', [{ x, y }]);
+      await driver.execute('mobile: tap', { x, y });
       return;
     }
 
@@ -507,17 +507,27 @@ export class RealAppiumAdapter implements PlatformAdapter {
     const height = Math.max(1, Math.round(size.height * 0.8));
 
     if (this.platform === 'android') {
-      await driver.execute('mobile: scrollGesture', [
-        { left, top, width, height, direction, percent: gesturePercent }
-      ]);
+      await driver.execute('mobile: scrollGesture', {
+        left,
+        top,
+        width,
+        height,
+        direction,
+        percent: gesturePercent
+      });
       return;
     }
 
     if (this.platform === 'ios') {
       try {
-        await driver.execute('mobile: scrollGesture', [
-          { left, top, width, height, direction, percent: gesturePercent }
-        ]);
+        await driver.execute('mobile: scrollGesture', {
+          left,
+          top,
+          width,
+          height,
+          direction,
+          percent: gesturePercent
+        });
         return;
       } catch {
         await this.swipeViewport(direction, gesturePercent, size.width, size.height);
