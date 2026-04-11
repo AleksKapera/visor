@@ -21,7 +21,6 @@ These inputs are accepted globally and, where relevant, by individual commands.
 | `server-url` | Appium server URL |
 | `app-id` | Android app package or iOS bundle identifier; on iOS it must match an installed app on the selected target |
 | `attach` | Attach to an already running app process when possible |
-| `mock` | Use mock runtime instead of a real device |
 
 Important notes:
 
@@ -67,8 +66,7 @@ Returns action payload fields:
 
 Current behavior:
 
-- in the real Appium adapter, the destination is passed to WebdriverIO through `url(to)`
-- in mock mode, the destination is echoed back in the action payload
+- the destination is passed to WebdriverIO through `url(to)`
 
 ### `act`
 
@@ -162,7 +160,7 @@ Returns action payload fields:
 - `args.format`
 - `args.bytes`
 
-For real-device direct action commands, run `visor start` first. Mock commands do not require the daemon.
+For direct action commands, run `visor start` first.
 
 ## Scenario commands
 
@@ -202,7 +200,6 @@ Optional runtime inputs:
 - `server-url`
 - `app-id`
 - `attach`
-- `mock`
 
 Response data fields:
 
@@ -211,7 +208,7 @@ Response data fields:
 
 The `run` object contains the full run result, including step results, assertion results, artifacts, determinism signature, and run-level error data.
 
-For real-device scenario runs, run `visor start` first. Mock runs do not require the daemon.
+For scenario runs, run `visor start` first.
 
 ### `benchmark`
 
@@ -237,7 +234,7 @@ Response data fields:
 - `runIds`
 - `warnings`
 
-For real-device benchmark runs, run `visor start` first. Mock benchmarks do not require the daemon.
+For benchmark runs, run `visor start` first.
 
 ### `report`
 

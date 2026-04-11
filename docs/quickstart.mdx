@@ -3,7 +3,7 @@ title: "Getting started"
 description: "Install visor, check the local requirements, and run your first command."
 ---
 
-Use this guide to install the TypeScript CLI, confirm it works, and then run a minimal scenario before you connect to a real mobile runtime.
+Use this guide to install the TypeScript CLI, confirm it works, and then run a minimal scenario against a mobile runtime.
 
 ## Requirements
 
@@ -12,9 +12,7 @@ Before you install visor, make sure you have:
 - Node.js `20` or later
 - `npm`
 
-For your first run, you can use mock mode. Mock mode does not require Appium, a simulator, or a device.
-
-For real mobile runs, you also need:
+For mobile runs, you also need:
 
 - a bootable Appium environment for the selected platform
 - a booted Android emulator or device, or an iOS simulator or device
@@ -102,13 +100,17 @@ The `output.report` field in the example is accepted by the schema, but the curr
 
 ## Run your first scenario
 
-Once validation passes, execute the same scenario in mock mode:
+Once validation passes, start the runtime daemon:
 
 ```bash
-visor run checkout-smoke.json --mock --output artifacts-test
+visor start --server-url http://127.0.0.1:4723
 ```
 
-Mock mode is the safest first run because it produces deterministic output without depending on Appium or mobile device setup.
+Then execute the same scenario:
+
+```bash
+visor run checkout-smoke.json --app-id com.example.app --output artifacts-test
+```
 
 visor writes a run directory under `artifacts-test/<run-id>/` with files such as:
 
@@ -119,13 +121,9 @@ visor writes a run directory under `artifacts-test/<run-id>/` with files such as
 - `report.html`
 - copied artifacts under `screenshots/` and `sources/`
 
-## Move to a real runtime
+## Choose a target
 
-When you are ready to run against an actual app, keep the same scenario command shape and add your runtime inputs:
-
-```bash
-visor start --server-url http://127.0.0.1:4723
-```
+When you need a specific app or device, add runtime inputs:
 
 ```bash
 visor run checkout-smoke.json \
@@ -134,10 +132,10 @@ visor run checkout-smoke.json \
   --app-id com.example.app
 ```
 
-Real runtime commands require the Visor daemon started by `visor start`. Use `visor status` to inspect the daemon and Appium state, and `visor stop` when you are done.
+Runtime commands require the Visor daemon started by `visor start`. Use `visor status` to inspect the daemon and Appium state, and `visor stop` when you are done.
 
 <Warning>
-Real runtime execution requires a booted device target and a working Appium environment. If you only want to verify the CLI and report flow, stay in `--mock` mode first.
+Runtime execution requires a booted device target and a working Appium environment.
 </Warning>
 
 ## Next steps

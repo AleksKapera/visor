@@ -505,7 +505,6 @@ export async function runDaemonFromEnv(): Promise<void> {
       runtime.platform,
       runtime.server_url,
       runtime.device,
-      false,
       runtime.app_id,
       runtime.attach_to_running
     );

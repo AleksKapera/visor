@@ -29,7 +29,6 @@ Supported today:
 - Android
 - iOS
 - real Appium-backed runs
-- mock runs for predictable dry-run behavior
 
 ## Install
 

@@ -12,10 +12,6 @@ export const DEFAULT_IOS_BUNDLE = 'com.example.app';
 export const DEFAULT_ANDROID_DEVICE = 'emulator-5554';
 export const DEFAULT_IOS_DEVICE = 'iPhone 17 Pro';
 
-const MINI_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0x8AAAAASUVORK5CYII=';
-const MINI_PNG = Buffer.from(MINI_PNG_BASE64, 'base64');
-
 export const ACCESSIBILITY_ID = 'accessibility id';
 export const XPATH = 'xpath';
 export const ELEMENT_ID = 'id';
@@ -565,107 +561,13 @@ export class RealAppiumAdapter implements PlatformAdapter {
   }
 }
 
-export class MockAdapter implements PlatformAdapter {
-  constructor(private readonly platform: Platform) {}
-
-  capability(): AdapterCapability {
-    return {
-      platform: this.platform,
-      commands: ['navigate', 'tap', 'act', 'scroll', 'screenshot', 'wait', 'source']
-    };
-  }
-
-  async navigate(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return { action: 'navigate', platform: this.platform, args };
-  }
-
-  async tap(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    resolveTapMode(args);
-    return { action: 'tap', platform: this.platform, args };
-  }
-
-  async act(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return { action: 'act', platform: this.platform, args };
-  }
-
-  async scroll(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const { direction, percent } = resolveScrollOptions(args);
-    return {
-      action: 'scroll',
-      platform: this.platform,
-      args: { direction, percent }
-    };
-  }
-
-  async screenshot(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const label = String(args.label ?? 'capture');
-    const filePath = path.resolve(typeof args.path === 'string' ? args.path : `${label}.png`);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, MINI_PNG);
-    const { width, height } = pngDimensions(filePath);
-    return {
-      action: 'screenshot',
-      platform: this.platform,
-      args: {
-        label,
-        file: path.basename(filePath),
-        path: filePath,
-        width,
-        height
-      }
-    };
-  }
-
-  async wait(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const ms = Number(args.ms ?? 0);
-    if (ms < 0) {
-      throw new Error('wait requires non-negative ms');
-    }
-
-    return { action: 'wait', platform: this.platform, args: { ms } };
-  }
-
-  async source(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const label = String(args.label ?? 'source');
-    const filePath = path.resolve(typeof args.path === 'string' ? args.path : `${label}.xml`);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const content = `<hierarchy platform="${this.platform}"><node text="mock" /></hierarchy>\n`;
-    fs.writeFileSync(filePath, content, 'utf8');
-    return {
-      action: 'source',
-      platform: this.platform,
-      args: {
-        label,
-        file: path.basename(filePath),
-        path: filePath,
-        format: 'xml',
-        bytes: fs.statSync(filePath).size
-      }
-    };
-  }
-
-  async exists(target: string): Promise<boolean> {
-    const lowered = target.toLowerCase();
-    return !lowered.includes('missing') && !lowered.includes('not_found');
-  }
-
-  async close(): Promise<void> {
-    return;
-  }
-}
-
 export async function getAdapter(
   platform: string,
   serverUrl = DEFAULT_SERVER_URL,
   device?: string,
-  useMock = false,
   appId?: string,
   attachToRunning = false
 ): Promise<PlatformAdapter> {
   const normalized = platform.toLowerCase() as Platform;
-  if (useMock) {
-    return new MockAdapter(normalized);
-  }
-
   return RealAppiumAdapter.create(normalized, serverUrl, device, appId, attachToRunning);
 }

@@ -22,8 +22,7 @@ Behavior details:
 - if a path is provided directly, visor writes to that path
 - if no path is provided, visor writes `<label>.png`
 - parent directories are created automatically
-- real runtime uses Appium screenshot persistence
-- mock runtime writes a valid 1x1 transparent PNG
+- visor uses Appium screenshot persistence
 
 ## UI source capture
 
@@ -42,8 +41,7 @@ Behavior details:
 - if a path is provided directly, visor writes to that path
 - if no path is provided, visor writes `<label>.xml`
 - parent directories are created automatically
-- real runtime writes the current Appium `page_source`
-- mock runtime writes a minimal XML hierarchy
+- visor writes the current Appium `page_source`
 
 ## Automatic paths during scenario runs
 

@@ -1,4 +1,4 @@
-import { DEFAULT_SERVER_URL, getAdapter } from './adapters.js';
+import { DEFAULT_SERVER_URL } from './adapters.js';
 import {
   DaemonRequestTimeoutError,
   DaemonUnavailableError,
@@ -10,7 +10,7 @@ import {
 } from './daemon.js';
 import { makeError } from './errors.js';
 import { writeReports } from './report.js';
-import { determinismCheck, runScenario } from './runner.js';
+import { determinismCheck } from './runner.js';
 import type {
   CommandName,
   CommandResponse,
@@ -42,7 +42,6 @@ interface RuntimeOptions {
   timeout?: number;
   output_dir: string;
   server_url: string;
-  use_mock: boolean;
   app_id?: string;
   attach_to_running: boolean;
 }
@@ -83,7 +82,6 @@ const GLOBAL_SPEC: Record<string, OptionType> = {
   'server-url': 'string',
   'app-id': 'string',
   attach: 'boolean',
-  mock: 'boolean',
   verbose: 'boolean'
 };
 
@@ -113,8 +111,7 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     format: 'string',
     'server-url': 'string',
     'app-id': 'string',
-    attach: 'boolean',
-    mock: 'boolean'
+    attach: 'boolean'
   },
   benchmark: {
     runs: 'number',
@@ -126,8 +123,7 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     format: 'string',
     'server-url': 'string',
     'app-id': 'string',
-    attach: 'boolean',
-    mock: 'boolean'
+    attach: 'boolean'
   },
   report: { format: 'string' },
   start: {
@@ -163,7 +159,7 @@ function helpText(): string {
     '',
     'Commands:',
     '  validate <scenario>',
-    '  run <scenario> [--mock] [--output <dir>]',
+    '  run <scenario> [--output <dir>]',
     '  benchmark <scenario> [--runs <n>] [--threshold <percent>]',
     '  report [path]',
     '  start [--server-url <url>] [--appium-cmd <cmd>]',
@@ -174,8 +170,8 @@ function helpText(): string {
     'Examples:',
     '  visor validate scenarios/checkout-smoke.json',
     '  visor start --server-url http://127.0.0.1:4723',
-    '  visor run scenarios/checkout-smoke.json --mock --output artifacts-test',
-    '  visor scroll --platform android --mock --direction down',
+    '  visor run scenarios/checkout-smoke.json --output artifacts-test',
+    '  visor scroll --platform android --direction down',
     '  node dist/main.js status'
   ].join('\n');
 }
@@ -293,7 +289,6 @@ function resolvedRuntime(options: ParsedOptions, scenario: Scenario): RuntimeOpt
           : 2500,
     output_dir: String(options.output ?? scenario.config.artifactsDir ?? 'artifacts'),
     server_url: String(options['server-url'] ?? DEFAULT_SERVER_URL),
-    use_mock: Boolean(options.mock),
     app_id: typeof options['app-id'] === 'string' ? options['app-id'] : undefined,
     attach_to_running: Boolean(options.attach)
   };
@@ -308,7 +303,6 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
     'timeout',
     'verbose',
     'server-url',
-    'mock',
     'seed',
     'app-id',
     'attach'
@@ -363,8 +357,8 @@ function cmdHelp(): CommandResult {
     examples: [
       'visor validate scenarios/checkout-smoke.json',
       'visor start --server-url http://127.0.0.1:4723',
-      'visor run scenarios/checkout-smoke.json --mock --output artifacts-test',
-      'visor scroll --platform android --mock --direction down',
+      'visor run scenarios/checkout-smoke.json --output artifacts-test',
+      'visor scroll --platform android --direction down',
       'node dist/main.js status'
     ]
   } satisfies HelpData;
@@ -426,34 +420,19 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
   const runtime = resolvedRuntime(parsed.options, scenario);
 
   try {
-    const result = runtime.use_mock
-      ? await runScenario(
-          scenario,
-          await getAdapter(
-            runtime.platform,
-            runtime.server_url,
-            runtime.device,
-            true,
-            runtime.app_id,
-            runtime.attach_to_running
-          ),
-          runtime.device,
-          runtime.timeout,
-          runtime.output_dir
-        )
-      : await runDaemonScenario(
-          {
-            platform: runtime.platform,
-            server_url: runtime.server_url,
-            device: runtime.device,
-            app_id: runtime.app_id,
-            attach_to_running: runtime.attach_to_running
-          },
-          scenario,
-          runtime.device,
-          runtime.timeout,
-          runtime.output_dir
-        );
+    const result = await runDaemonScenario(
+      {
+        platform: runtime.platform,
+        server_url: runtime.server_url,
+        device: runtime.device,
+        app_id: runtime.app_id,
+        attach_to_running: runtime.attach_to_running
+      },
+      scenario,
+      runtime.device,
+      runtime.timeout,
+      runtime.output_dir
+    );
     const outputs = writeReports(result, runtime.output_dir);
 
     if (result.status === 'fail' && result.error) {
@@ -530,34 +509,19 @@ export async function cmdBenchmark(parsed: ParsedCommand): Promise<CommandResult
 
   for (let index = 0; index < runs; index += 1) {
     try {
-      const result = runtime.use_mock
-        ? await runScenario(
-            scenario,
-            await getAdapter(
-              runtime.platform,
-              runtime.server_url,
-              runtime.device,
-              true,
-              runtime.app_id,
-              runtime.attach_to_running
-            ),
-            runtime.device,
-            runtime.timeout,
-            runtime.output_dir
-          )
-        : await runDaemonScenario(
-            {
-              platform: runtime.platform,
-              server_url: runtime.server_url,
-              device: runtime.device,
-              app_id: runtime.app_id,
-              attach_to_running: runtime.attach_to_running
-            },
-            scenario,
-            runtime.device,
-            runtime.timeout,
-            runtime.output_dir
-          );
+      const result = await runDaemonScenario(
+        {
+          platform: runtime.platform,
+          server_url: runtime.server_url,
+          device: runtime.device,
+          app_id: runtime.app_id,
+          attach_to_running: runtime.attach_to_running
+        },
+        scenario,
+        runtime.device,
+        runtime.timeout,
+        runtime.output_dir
+      );
       writeReports(result, runtime.output_dir);
       signatures.push(result.determinism_signature);
       runIds.push(result.run_id);
@@ -565,7 +529,7 @@ export async function cmdBenchmark(parsed: ParsedCommand): Promise<CommandResult
         failures += 1;
       }
     } catch (error) {
-      if (!runtime.use_mock && error instanceof DaemonUnavailableError) {
+      if (error instanceof DaemonUnavailableError) {
         const response = envelopeFail(
           commandId,
           startedAt,
@@ -576,7 +540,7 @@ export async function cmdBenchmark(parsed: ParsedCommand): Promise<CommandResult
         );
         return { code: 1, response };
       }
-      if (!runtime.use_mock && error instanceof DaemonRequestTimeoutError) {
+      if (error instanceof DaemonRequestTimeoutError) {
         const response = envelopeFail(
           commandId,
           startedAt,
@@ -627,7 +591,6 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
     platform: String(parsed.options.platform ?? 'android') as Platform,
     device: typeof parsed.options.device === 'string' ? parsed.options.device : undefined,
     server_url: String(parsed.options['server-url'] ?? DEFAULT_SERVER_URL),
-    use_mock: Boolean(parsed.options.mock),
     app_id: typeof parsed.options['app-id'] === 'string' ? parsed.options['app-id'] : undefined,
     attach_to_running: Boolean(parsed.options.attach)
   };
@@ -635,32 +598,19 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
   let payload: Record<string, unknown> = {};
   let artifacts: string[] = [];
   let actionError: unknown;
-  let adapter;
 
   try {
-    if (options.use_mock) {
-      adapter = await getAdapter(
-        options.platform,
-        options.server_url,
-        options.device,
-        true,
-        options.app_id,
-        options.attach_to_running
-      );
-      payload = await adapter[command](actionArgs(command, parsed.options));
-    } else {
-      payload = await runDaemonAction(
-        {
-          platform: options.platform,
-          server_url: options.server_url,
-          device: options.device ?? (options.platform === 'android' ? 'emulator-5554' : 'iPhone 17 Pro'),
-          app_id: options.app_id,
-          attach_to_running: options.attach_to_running
-        },
-        command,
-        actionArgs(command, parsed.options)
-      );
-    }
+    payload = await runDaemonAction(
+      {
+        platform: options.platform,
+        server_url: options.server_url,
+        device: options.device ?? (options.platform === 'android' ? 'emulator-5554' : 'iPhone 17 Pro'),
+        app_id: options.app_id,
+        attach_to_running: options.attach_to_running
+      },
+      command,
+      actionArgs(command, parsed.options)
+    );
     const actionPayload = payload.args;
     if (actionPayload && typeof actionPayload === 'object' && !Array.isArray(actionPayload)) {
       const maybePath = (actionPayload as Record<string, unknown>).path;
@@ -670,10 +620,6 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
     }
   } catch (error) {
     actionError = error;
-  } finally {
-    if (adapter) {
-      await adapter.close();
-    }
   }
 
   if (actionError) {

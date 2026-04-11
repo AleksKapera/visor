@@ -14,15 +14,11 @@ visor supports two mobile platforms:
 
 visor is mobile-only today. Web support is not implemented.
 
-## Runtime modes
+## Runtime
 
-visor can run in two modes.
+visor connects to an Appium server and interacts with an actual simulator, emulator, or device.
 
-### Real runtime
-
-In real runtime mode, visor connects to an Appium server and interacts with an actual simulator, emulator, or device.
-
-What real runtime requires:
+Runtime execution requires:
 
 - a running Visor daemon from `visor start`
 - a booted iOS or Android target
@@ -34,22 +30,6 @@ Platform note:
 - Android `app-id` maps to `appPackage`
 - iOS `app-id` maps to `bundleId` and must match an app already installed on the selected simulator or device
 - the Android package name and iOS bundle identifier can differ for the same product
-
-### Mock runtime
-
-In mock runtime mode, visor does not talk to a real device.
-
-Mock mode is useful when you want to:
-
-- validate wiring and payload handling
-- produce deterministic test artifacts
-- exercise run and benchmark flows without device infrastructure
-
-Mock mode behavior:
-
-- screenshots are written as a valid 1x1 PNG
-- UI source is written as a minimal XML document
-- visibility assertions fail only when the target contains `missing` or `not_found`
 
 ## Default runtime values
 
@@ -110,7 +90,6 @@ The main resolved values are:
 - artifact output directory
 - server URL
 - app identifier
-- runtime mode
 
 ## Attach mode
 
@@ -121,13 +100,13 @@ When you pass `--attach` (or set `VISOR_ATTACH_TO_RUNNING=true`), visor asks App
 
 ## Runtime lifecycle and connectivity preflight
 
-For scenario execution and direct action commands in real runtime mode, start the Visor daemon first:
+For scenario execution and direct action commands, start the Visor daemon first:
 
 ```bash
 visor start
 ```
 
-`visor start` ensures Appium is reachable and starts a local daemon that keeps WebDriver sessions warm for subsequent commands. Real runtime commands fail early if the daemon is not running. Mock commands do not require the daemon.
+`visor start` ensures Appium is reachable and starts a local daemon that keeps WebDriver sessions warm for subsequent commands. Runtime commands fail early if the daemon is not running.
 
 If another Appium process is already listening on the selected `server-url`, `visor start` fails instead of reusing it. Stop the existing Appium process or choose a different `--server-url` so Visor owns the Appium lifecycle.
 
