@@ -1,16 +1,16 @@
 ---
 title: "Platforms and runtime"
-description: "See which platforms visor supports, how runtime resolution works, and which defaults and environment variables affect execution."
+description: "See which platforms visor supports, how runtime resolution works, and which environment variables affect execution."
 ---
 
 ## Supported platforms
 
 visor supports two mobile platforms:
 
-| Platform | Driver stack | Default device name |
-| --- | --- | --- |
-| Android | Appium with `UiAutomator2` | `emulator-5554` |
-| iOS | Appium with `XCUITest` | `iPhone 17 Pro` |
+| Platform | Driver stack |
+| --- | --- |
+| Android | Appium with `UiAutomator2` |
+| iOS | Appium with `XCUITest` |
 
 visor is mobile-only today. Web support is not implemented.
 
@@ -31,9 +31,26 @@ Platform note:
 - iOS `app-id` maps to `bundleId` and must match an app already installed on the selected simulator or device
 - the Android package name and iOS bundle identifier can differ for the same product
 
+## Device selection
+
+visor requires a running device target for runtime commands. Pass `--device` when you know the target identifier:
+
+```bash
+visor run checkout-smoke.json --device emulator-5554 --app-id com.example.app
+```
+
+If you omit `--device`, visor detects running Android devices and booted iOS simulators:
+
+- Android devices come from `adb devices` entries in the `device` state
+- iOS simulators come from `xcrun simctl list devices booted`
+
+When exactly one target is detected, visor uses it automatically. When multiple targets are detected in an interactive terminal, visor prompts you to choose one. In a non-interactive shell, visor returns a failure envelope and asks you to rerun with `--device`.
+
+The runtime platform is inferred from the selected device. The CLI does not accept `--platform`.
+
 ## Default runtime values
 
-When you do not set an explicit runtime value, visor resolves defaults.
+When you do not set an explicit runtime value, visor resolves defaults for non-device settings.
 
 | Setting | Default value |
 | --- | --- |
@@ -41,22 +58,16 @@ When you do not set an explicit runtime value, visor resolves defaults.
 | Android app id fallback | `com.example.app` |
 | iOS bundle id fallback | `com.example.app` |
 | Android default activity fallback | `.MainActivity` |
-| Android default device | `emulator-5554` |
-| iOS default device | `iPhone 17 Pro` |
-
-For scenario execution, platform is resolved from the scenario unless you override it at runtime.
 
 ## Environment variables
 
-visor reads runtime configuration from environment variables when explicit runtime input is not provided.
+visor reads these runtime settings from environment variables when explicit runtime input is not provided.
 
 | Environment variable | Purpose |
 | --- | --- |
 | `VISOR_ANDROID_APP_PACKAGE` | Android app package name |
 | `VISOR_ANDROID_APP_ACTIVITY` | Android launch activity |
-| `VISOR_ANDROID_DEVICE` | Android device or emulator identifier |
 | `VISOR_IOS_BUNDLE_ID` | iOS bundle identifier |
-| `VISOR_IOS_DEVICE` | iOS simulator or device name |
 | `VISOR_ATTACH_TO_RUNNING` | Reuse running app process (`true`/`1`/`yes`/`on`) |
 | `VISOR_APPIUM_CMD` | Command `visor start` uses when it needs to launch Appium |
 | `VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS` | WebDriverIO request timeout for Appium calls |
@@ -66,9 +77,7 @@ Legacy `PATF_*` fallbacks are only supported for the mobile runtime variables im
 
 - `PATF_ANDROID_APP_PACKAGE`
 - `PATF_ANDROID_APP_ACTIVITY`
-- `PATF_ANDROID_DEVICE`
 - `PATF_IOS_BUNDLE_ID`
-- `PATF_IOS_DEVICE`
 - `PATF_ATTACH_TO_RUNNING`
 
 There is no `PATF_*` fallback for Appium command resolution.
@@ -78,9 +87,10 @@ There is no `PATF_*` fallback for Appium command resolution.
 For scenario runs and benchmarks, visor resolves runtime settings in this order:
 
 1. explicit runtime input
-2. scenario-level defaults where applicable
-3. environment variables
-4. built-in defaults
+2. detected running device target, when `--device` is omitted
+3. scenario-level defaults where applicable
+4. environment variables
+5. built-in defaults
 
 The main resolved values are:
 

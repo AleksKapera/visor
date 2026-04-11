@@ -2,7 +2,6 @@
   "meta": {
     "name": "empty-app-counter",
     "version": "1",
-    "platform": "android",
     "tags": ["smoke", "counter"]
   },
   "config": {

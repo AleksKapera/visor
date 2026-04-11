@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { executeCommand } from '../src/cli.js';
+import { resetDeviceCommandRunner, setDeviceCommandRunner } from '../src/devices.js';
 
 function tempOutputDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'visor-output-'));
@@ -26,6 +27,21 @@ async function withMissingDaemonSocket<T>(work: () => Promise<T>): Promise<T> {
       process.env.VISOR_DAEMON_SOCKET_PATH = originalSocket;
     }
     fs.rmSync(socketDir, { recursive: true, force: true });
+  }
+}
+
+async function withDetectedDevice<T>(work: () => Promise<T>): Promise<T> {
+  setDeviceCommandRunner(async (command) => {
+    if (command === 'adb') {
+      return 'List of devices attached\nemulator-5554\tdevice\n';
+    }
+    return '';
+  });
+
+  try {
+    return await work();
+  } finally {
+    resetDeviceCommandRunner();
   }
 }
 
@@ -66,16 +82,18 @@ describe('typescript cli', () => {
   });
 
   it('accepts action format flags after action options', async () => {
-    const result = await withMissingDaemonSocket(() =>
-      executeCommand([
-        'wait',
-        '--platform',
-        'android',
-        '--ms',
-        '1',
-        '--format',
-        'json'
-      ])
+    const result = await withDetectedDevice(() =>
+      withMissingDaemonSocket(() =>
+        executeCommand([
+          'wait',
+          '--device',
+          'emulator-5554',
+          '--ms',
+          '1',
+          '--format',
+          'json'
+        ])
+      )
     );
     expect(result.code).toBe(1);
     expect(result.response.status).toBe('fail');
@@ -83,8 +101,10 @@ describe('typescript cli', () => {
   });
 
   it('requires visor start for scenario runs', async () => {
-    const result = await withMissingDaemonSocket(() =>
-      executeCommand(['run', 'scenarios/checkout-smoke.json', '--app-id', 'com.example.custom'])
+    const result = await withDetectedDevice(() =>
+      withMissingDaemonSocket(() =>
+        executeCommand(['run', 'scenarios/checkout-smoke.json', '--app-id', 'com.example.custom'])
+      )
     );
 
     expect(result.code).toBe(1);
@@ -94,19 +114,19 @@ describe('typescript cli', () => {
   });
 
   it('requires visor start for benchmark runs', async () => {
-    const result = await withMissingDaemonSocket(() =>
-      executeCommand([
-        'benchmark',
-        'scenarios/checkout-smoke.json',
-        '--platform',
-        'android',
-        '--runs',
-        '1',
-        '--threshold',
-        '95',
-        '--format',
-        'json'
-      ])
+    const result = await withDetectedDevice(() =>
+      withMissingDaemonSocket(() =>
+        executeCommand([
+          'benchmark',
+          'scenarios/checkout-smoke.json',
+          '--runs',
+          '1',
+          '--threshold',
+          '95',
+          '--format',
+          'json'
+        ])
+      )
     );
 
     expect(result.code).toBe(1);
@@ -151,11 +171,9 @@ describe('typescript cli', () => {
   });
 
   it('requires visor start for real action commands', async () => {
-    await withMissingDaemonSocket(async () => {
+    await withDetectedDevice(() => withMissingDaemonSocket(async () => {
       const result = await executeCommand([
         'scroll',
-        '--platform',
-        'android',
         '--direction',
         'down'
       ]);
@@ -163,6 +181,12 @@ describe('typescript cli', () => {
       expect(result.response.status).toBe('fail');
       expect(result.response.error?.code).toBe('TARGET_ERROR');
       expect(result.response.error?.next_step).toContain('visor start');
-    });
+    }));
+  });
+
+  it('rejects removed platform runtime option', async () => {
+    await expect(
+      executeCommand(['scroll', '--platform', 'android', '--direction', 'down'])
+    ).rejects.toThrow("Unknown option '--platform'");
   });
 });

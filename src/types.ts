@@ -52,7 +52,7 @@ export interface Scenario {
   meta: {
     name: string;
     version: string;
-    platform: Platform;
+    platform?: Platform;
     tags?: string[];
     [key: string]: unknown;
   };

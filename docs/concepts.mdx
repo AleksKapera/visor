@@ -24,8 +24,8 @@ A runtime target is the environment visor connects to.
 
 A target includes:
 
-- platform: `android` or `ios`
 - device identity
+- platform inferred from the selected device
 - Appium server location
 - app identifier when one is required
 
@@ -48,7 +48,7 @@ Each action produces a structured payload. Some actions also write files.
 
 A scenario is a JSON document with four functional sections:
 
-- `meta`: identifies the scenario and platform
+- `meta`: identifies the scenario
 - `config`: defines runtime-related defaults such as timeout, seed, and artifact directory
 - `steps`: the ordered actions to execute
 - `assertions`: checks evaluated after the steps complete

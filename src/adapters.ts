@@ -9,8 +9,6 @@ import { errorMessage, parseServerUrl, sleep } from './utils.js';
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:4723';
 export const DEFAULT_ANDROID_APP = 'com.example.app';
 export const DEFAULT_IOS_BUNDLE = 'com.example.app';
-export const DEFAULT_ANDROID_DEVICE = 'emulator-5554';
-export const DEFAULT_IOS_DEVICE = 'iPhone 17 Pro';
 
 export const ACCESSIBILITY_ID = 'accessibility id';
 export const XPATH = 'xpath';
@@ -411,11 +409,14 @@ export class RealAppiumAdapter implements PlatformAdapter {
     const server = parseServerUrl(this.serverUrl);
     const capabilities: Record<string, unknown> = {};
 
+    if (!this.device) {
+      throw new Error('A running device must be selected before creating an Appium session.');
+    }
+
     if (this.platform === 'android') {
       capabilities.platformName = 'Android';
       capabilities['appium:automationName'] = 'UiAutomator2';
-      capabilities['appium:udid'] =
-        this.device ?? env('VISOR_ANDROID_DEVICE', 'PATF_ANDROID_DEVICE', DEFAULT_ANDROID_DEVICE);
+      capabilities['appium:udid'] = this.device;
       capabilities['appium:appPackage'] =
         this.appId ?? env('VISOR_ANDROID_APP_PACKAGE', 'PATF_ANDROID_APP_PACKAGE', DEFAULT_ANDROID_APP);
       capabilities['appium:appActivity'] = env(
@@ -434,8 +435,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
     } else {
       capabilities.platformName = 'iOS';
       capabilities['appium:automationName'] = 'XCUITest';
-      capabilities['appium:deviceName'] =
-        this.device ?? env('VISOR_IOS_DEVICE', 'PATF_IOS_DEVICE', DEFAULT_IOS_DEVICE);
+      capabilities['appium:udid'] = this.device;
       capabilities['appium:bundleId'] =
         this.appId ?? env('VISOR_IOS_BUNDLE_ID', 'PATF_IOS_BUNDLE_ID', DEFAULT_IOS_BUNDLE);
       capabilities['appium:newCommandTimeout'] = 60;

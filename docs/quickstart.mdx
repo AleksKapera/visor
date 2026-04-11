@@ -14,7 +14,7 @@ Before you install visor, make sure you have:
 
 For mobile runs, you also need:
 
-- a bootable Appium environment for the selected platform
+- a bootable Appium environment for the selected device platform
 - a booted Android emulator or device, or an iOS simulator or device
 - the app identifier for the app you want visor to launch or attach to
 
@@ -56,8 +56,7 @@ Create a minimal scenario file named `checkout-smoke.json`:
 {
   "meta": {
     "name": "checkout-smoke",
-    "version": "1",
-    "platform": "android"
+    "version": "1"
   },
   "config": {
     "timeoutMs": 15000,
@@ -127,10 +126,11 @@ When you need a specific app or device, add runtime inputs:
 
 ```bash
 visor run checkout-smoke.json \
-  --platform android \
   --device emulator-5554 \
   --app-id com.example.app
 ```
+
+If you omit `--device`, visor detects running Android devices and booted iOS simulators. When more than one target is available, visor prompts you to choose one.
 
 Runtime commands require the Visor daemon started by `visor start`. Use `visor status` to inspect the daemon and Appium state, and `visor stop` when you are done.
 

@@ -94,7 +94,7 @@ export async function runScenario(
 ): Promise<RunResult> {
   const started_at = utcNowIso();
   const run_id = makeId('run');
-  const platform = scenario.meta.platform;
+  const platform = adapter.capability().platform;
   const stepResults: StepResult[] = [];
   const artifacts: string[] = [];
   let topError: RunResult['error'];

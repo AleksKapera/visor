@@ -32,7 +32,7 @@ Allowed fields:
 | --- | --- | --- | --- |
 | `$.meta.name` | string | Yes | Scenario name |
 | `$.meta.version` | string | Yes | Scenario version |
-| `$.meta.platform` | string | Yes | Must be `ios` or `android` |
+| `$.meta.platform` | string | No | Legacy metadata field; if present, must be `ios` or `android` |
 | `$.meta.tags` | array | No | Free-form tags |
 
 ## `config`
@@ -157,7 +157,6 @@ Allowed fields:
   "meta": {
     "name": "empty-app-counter",
     "version": "1",
-    "platform": "android",
     "tags": ["smoke", "counter"]
   },
   "config": {

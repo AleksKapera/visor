@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import type {
   Assertion,
   ParseValidationResult,
-  Platform,
   Scenario,
   Step,
   ValidationIssue
@@ -173,18 +172,23 @@ export function parseAndValidate(filePath: string): ParseValidationResult {
   let meta: Scenario['meta'] | null = null;
   if (isRecord(metaRaw)) {
     issues.push(...unknownFields(metaRaw, ALLOWED_META, '$.meta'));
-    issues.push(...requiredFields(metaRaw, ['name', 'version', 'platform'], '$.meta'));
+    issues.push(...requiredFields(metaRaw, ['name', 'version'], '$.meta'));
 
-    if (metaRaw.platform !== 'ios' && metaRaw.platform !== 'android') {
+    if (
+      metaRaw.platform !== undefined &&
+      metaRaw.platform !== 'ios' &&
+      metaRaw.platform !== 'android'
+    ) {
       issues.push(
         validationIssue('error', 'INPUT_ERROR', 'meta.platform must be ios|android', '$.meta.platform')
       );
-    } else if (typeof metaRaw.name === 'string' && typeof metaRaw.version === 'string') {
+    }
+
+    if (typeof metaRaw.name === 'string' && typeof metaRaw.version === 'string') {
       meta = {
         ...metaRaw,
         name: metaRaw.name,
-        version: metaRaw.version,
-        platform: metaRaw.platform as Platform
+        version: metaRaw.version
       };
     }
   } else {

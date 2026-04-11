@@ -11,7 +11,7 @@ A scenario is a JSON object with these top-level fields:
 
 | Field | Required | Purpose |
 | --- | --- | --- |
-| `meta` | Yes | Scenario identity and platform |
+| `meta` | Yes | Scenario identity |
 | `config` | Yes | Runtime defaults such as timeout, seed, and artifact directory |
 | `steps` | Yes | Ordered execution steps |
 | `assertions` | No | Checks evaluated after the steps finish |
@@ -25,8 +25,7 @@ Unknown top-level fields are treated as validation errors.
 {
   "meta": {
     "name": "checkout-smoke",
-    "version": "1",
-    "platform": "android"
+    "version": "1"
   },
   "config": {
     "seed": 42
@@ -77,7 +76,7 @@ Examples of validation errors:
 - `scroll` uses an unsupported `direction`
 - `scroll` uses an out-of-range `percent`
 - `wait` omits `ms`
-- `meta.platform` is not `ios` or `android`
+- `meta.platform` is present but is not `ios` or `android`
 - unknown fields in validated objects such as the top level, `meta`, `config`, each step object, each assertion object, and `output`
 
 Examples of validation warnings:
@@ -93,14 +92,14 @@ If validation produces any error-level issue, the scenario is rejected.
 
 Before executing a scenario, visor resolves:
 
-- platform
 - device
+- platform inferred from the selected device
 - timeout
 - output directory
 - server URL
 - app identifier
 
-Scenario configuration can provide defaults, but explicit runtime input takes precedence.
+Scenario configuration can provide non-device defaults, but explicit runtime input takes precedence.
 
 ## Step execution model
 

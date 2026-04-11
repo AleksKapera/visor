@@ -2,7 +2,6 @@
   "meta": {
     "name": "checkout-smoke",
     "version": "1",
-    "platform": "android",
     "tags": ["smoke"]
   },
   "config": {

@@ -16,6 +16,21 @@ function writeScenario(scenario: Record<string, unknown>): string {
 describe('scenario validator', () => {
   it('accepts scroll steps with direction and percent', () => {
     const scenarioPath = writeScenario({
+      meta: { name: 'scroll-valid', version: '1' },
+      config: { seed: 1 },
+      steps: [{ id: 's1', command: 'scroll', args: { direction: 'down', percent: 70 } }],
+      assertions: [],
+      output: {}
+    });
+
+    const result = parseAndValidate(scenarioPath);
+
+    expect(result.scenario).not.toBeNull();
+    expect(result.issues.filter((issue) => issue.severity === 'error')).toHaveLength(0);
+  });
+
+  it('accepts legacy meta platform when valid', () => {
+    const scenarioPath = writeScenario({
       meta: { name: 'scroll-valid', version: '1', platform: 'android' },
       config: { seed: 1 },
       steps: [{ id: 's1', command: 'scroll', args: { direction: 'down', percent: 70 } }],

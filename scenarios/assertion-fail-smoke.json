@@ -2,7 +2,6 @@
   "meta": {
     "name": "assertion-fail-smoke",
     "version": "1",
-    "platform": "android",
     "tags": ["smoke"]
   },
   "config": {

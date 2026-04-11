@@ -8,6 +8,7 @@ import {
   statusVisorDaemon,
   stopVisorDaemon
 } from './daemon.js';
+import { DeviceSelectionError, resolveRunningDevice } from './devices.js';
 import { makeError } from './errors.js';
 import { writeReports } from './report.js';
 import { determinismCheck } from './runner.js';
@@ -73,7 +74,6 @@ const ALL_COMMANDS = new Set<string>([
 ]);
 
 const GLOBAL_SPEC: Record<string, OptionType> = {
-  platform: 'string',
   device: 'string',
   timeout: 'number',
   output: 'string',
@@ -104,7 +104,6 @@ const ACTION_SPEC: Record<string, OptionType> = {
 const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
   validate: { format: 'string' },
   run: {
-    platform: 'string',
     device: 'string',
     timeout: 'number',
     output: 'string',
@@ -116,7 +115,6 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
   benchmark: {
     runs: 'number',
     threshold: 'number',
-    platform: 'string',
     device: 'string',
     timeout: 'number',
     output: 'string',
@@ -171,7 +169,7 @@ function helpText(): string {
     '  visor validate scenarios/checkout-smoke.json',
     '  visor start --server-url http://127.0.0.1:4723',
     '  visor run scenarios/checkout-smoke.json --output artifacts-test',
-    '  visor scroll --platform android --direction down',
+    '  visor scroll --device emulator-5554 --direction down',
     '  node dist/main.js status'
   ].join('\n');
 }
@@ -273,21 +271,19 @@ function warningIssues(issues: ValidationIssue[]): ValidationIssue[] {
   return issues.filter((issue) => issue.severity === 'warning');
 }
 
-function resolvedRuntime(options: ParsedOptions, scenario: Scenario): RuntimeOptions {
-  const platform = String(options.platform ?? scenario.meta.platform) as Platform;
-  const defaultDevice = platform === 'android' ? 'emulator-5554' : 'iPhone 17 Pro';
-  scenario.meta.platform = platform;
+async function resolvedRuntime(options: ParsedOptions): Promise<RuntimeOptions> {
+  const selectedDevice = await resolveRunningDevice(
+    typeof options.device === 'string' ? options.device : undefined
+  );
 
   return {
-    platform,
-    device: String(options.device ?? defaultDevice),
+    platform: selectedDevice.platform,
+    device: selectedDevice.id,
     timeout:
       typeof options.timeout === 'number'
         ? options.timeout
-        : typeof scenario.config.timeoutMs === 'number'
-          ? scenario.config.timeoutMs
-          : 2500,
-    output_dir: String(options.output ?? scenario.config.artifactsDir ?? 'artifacts'),
+        : 2500,
+    output_dir: String(options.output ?? 'artifacts'),
     server_url: String(options['server-url'] ?? DEFAULT_SERVER_URL),
     app_id: typeof options['app-id'] === 'string' ? options['app-id'] : undefined,
     attach_to_running: Boolean(options.attach)
@@ -296,7 +292,6 @@ function resolvedRuntime(options: ParsedOptions, scenario: Scenario): RuntimeOpt
 
 function actionArgs(command: CommandName, options: ParsedOptions): Record<string, unknown> {
   const commonIgnored = new Set([
-    'platform',
     'device',
     'format',
     'output',
@@ -358,7 +353,7 @@ function cmdHelp(): CommandResult {
       'visor validate scenarios/checkout-smoke.json',
       'visor start --server-url http://127.0.0.1:4723',
       'visor run scenarios/checkout-smoke.json --output artifacts-test',
-      'visor scroll --platform android --direction down',
+      'visor scroll --device emulator-5554 --direction down',
       'node dist/main.js status'
     ]
   } satisfies HelpData;
@@ -417,7 +412,35 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
     return { code: 1, response };
   }
 
-  const runtime = resolvedRuntime(parsed.options, scenario);
+  let runtime: RuntimeOptions;
+  try {
+    runtime = await resolvedRuntime({
+      ...parsed.options,
+      timeout:
+        typeof parsed.options.timeout === 'number'
+          ? parsed.options.timeout
+          : typeof scenario.config.timeoutMs === 'number'
+            ? scenario.config.timeoutMs
+            : undefined,
+      output:
+        parsed.options.output ??
+        (typeof scenario.config.artifactsDir === 'string' ? scenario.config.artifactsDir : undefined)
+    });
+  } catch (error) {
+    if (!(error instanceof DeviceSelectionError)) {
+      throw error;
+    }
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'TARGET_ERROR',
+      'Device selection failed',
+      error.message,
+      'Start one target device or rerun with --device <device-id>'
+    );
+    response.data = { devices: error.devices };
+    return { code: 1, response };
+  }
 
   try {
     const result = await runDaemonScenario(
@@ -500,7 +523,35 @@ export async function cmdBenchmark(parsed: ParsedCommand): Promise<CommandResult
     return { code: 1, response };
   }
 
-  const runtime = resolvedRuntime(parsed.options, scenario);
+  let runtime: RuntimeOptions;
+  try {
+    runtime = await resolvedRuntime({
+      ...parsed.options,
+      timeout:
+        typeof parsed.options.timeout === 'number'
+          ? parsed.options.timeout
+          : typeof scenario.config.timeoutMs === 'number'
+            ? scenario.config.timeoutMs
+            : undefined,
+      output:
+        parsed.options.output ??
+        (typeof scenario.config.artifactsDir === 'string' ? scenario.config.artifactsDir : undefined)
+    });
+  } catch (error) {
+    if (!(error instanceof DeviceSelectionError)) {
+      throw error;
+    }
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'TARGET_ERROR',
+      'Device selection failed',
+      error.message,
+      'Start one target device or rerun with --device <device-id>'
+    );
+    response.data = { devices: error.devices };
+    return { code: 1, response };
+  }
   const runs = typeof parsed.options.runs === 'number' ? parsed.options.runs : 20;
   const threshold = typeof parsed.options.threshold === 'number' ? parsed.options.threshold : 95;
   const signatures: string[] = [];
@@ -587,13 +638,24 @@ export async function cmdReport(parsed: ParsedCommand): Promise<CommandResult> {
 export async function cmdAction(command: CommandName, parsed: ParsedCommand): Promise<CommandResult> {
   const commandId = makeId('cmd');
   const startedAt = utcNowIso();
-  const options = {
-    platform: String(parsed.options.platform ?? 'android') as Platform,
-    device: typeof parsed.options.device === 'string' ? parsed.options.device : undefined,
-    server_url: String(parsed.options['server-url'] ?? DEFAULT_SERVER_URL),
-    app_id: typeof parsed.options['app-id'] === 'string' ? parsed.options['app-id'] : undefined,
-    attach_to_running: Boolean(parsed.options.attach)
-  };
+  let options: RuntimeOptions;
+  try {
+    options = await resolvedRuntime(parsed.options);
+  } catch (error) {
+    if (!(error instanceof DeviceSelectionError)) {
+      throw error;
+    }
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'TARGET_ERROR',
+      'Device selection failed',
+      error.message,
+      'Start one target device or rerun with --device <device-id>'
+    );
+    response.data = { devices: error.devices };
+    return { code: 1, response };
+  }
 
   let payload: Record<string, unknown> = {};
   let artifacts: string[] = [];
@@ -604,7 +666,7 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
       {
         platform: options.platform,
         server_url: options.server_url,
-        device: options.device ?? (options.platform === 'android' ? 'emulator-5554' : 'iPhone 17 Pro'),
+        device: options.device,
         app_id: options.app_id,
         attach_to_running: options.attach_to_running
       },

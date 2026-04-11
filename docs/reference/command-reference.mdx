@@ -13,7 +13,6 @@ These inputs are accepted globally and, where relevant, by individual commands.
 
 | Input | Meaning |
 | --- | --- |
-| `platform` | `android` or `ios` |
 | `device` | Device or simulator identifier |
 | `timeout` | Per-step timeout budget in milliseconds for scenario runs |
 | `output` | Base output directory for run artifacts and reports |
@@ -26,6 +25,7 @@ Important notes:
 
 - `format` is currently informational only for normal commands; the implementation still returns JSON envelopes
 - `visor --help` and no-command invocation print plain-text usage instead of JSON
+- `platform` is inferred from the selected device; `--platform` is not accepted
 
 ## Direct action commands
 
@@ -193,7 +193,6 @@ Required input:
 
 Optional runtime inputs:
 
-- `platform`
 - `device`
 - `timeout`
 - `output`
