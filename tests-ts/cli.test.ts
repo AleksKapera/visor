@@ -235,10 +235,49 @@ describe('typescript cli', () => {
   });
 
   it('returns status output for unmanaged appium', async () => {
-    const result = await executeCommand(['status', '--server-url', 'http://127.0.0.1:4723']);
-    const data = responseData<{ managed: boolean }>(result.response.data);
-    expect(result.code).toBe(0);
-    expect(result.response.status).toBe('ok');
-    expect(data.managed).toBe(false);
+    const originalSocket = process.env.VISOR_DAEMON_SOCKET_PATH;
+    process.env.VISOR_DAEMON_SOCKET_PATH = path.join(tempOutputDir(), 'missing.sock');
+
+    try {
+      const result = await executeCommand(['status', '--server-url', 'http://127.0.0.1:4723']);
+      const data = responseData<{ daemon: { running: boolean }; appium: { managed: boolean } }>(
+        result.response.data
+      );
+      expect(result.code).toBe(0);
+      expect(result.response.status).toBe('ok');
+      expect(data.daemon.running).toBe(false);
+      expect(data.appium.managed).toBe(false);
+    } finally {
+      if (originalSocket === undefined) {
+        delete process.env.VISOR_DAEMON_SOCKET_PATH;
+      } else {
+        process.env.VISOR_DAEMON_SOCKET_PATH = originalSocket;
+      }
+    }
+  });
+
+  it('requires visor start for real action commands', async () => {
+    const originalSocket = process.env.VISOR_DAEMON_SOCKET_PATH;
+    process.env.VISOR_DAEMON_SOCKET_PATH = path.join(tempOutputDir(), 'missing.sock');
+
+    try {
+      const result = await executeCommand([
+        'scroll',
+        '--platform',
+        'android',
+        '--direction',
+        'down'
+      ]);
+      expect(result.code).toBe(1);
+      expect(result.response.status).toBe('fail');
+      expect(result.response.error?.code).toBe('TARGET_ERROR');
+      expect(result.response.error?.next_step).toContain('visor start');
+    } finally {
+      if (originalSocket === undefined) {
+        delete process.env.VISOR_DAEMON_SOCKET_PATH;
+      } else {
+        process.env.VISOR_DAEMON_SOCKET_PATH = originalSocket;
+      }
+    }
   });
 });

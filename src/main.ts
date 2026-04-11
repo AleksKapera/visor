@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { executeCommand } from './cli.js';
+import { runDaemonFromEnv } from './daemon.js';
 import { makeError } from './errors.js';
 import { makeId, utcNowIso } from './utils.js';
 
@@ -19,6 +20,11 @@ function isHelpData(value: unknown): value is { usageText: string } {
 
 async function main(argv = process.argv.slice(2)): Promise<number> {
   try {
+    if (argv[0] === '__daemon') {
+      await runDaemonFromEnv();
+      return 0;
+    }
+
     const result = await executeCommand(argv);
     if (isHelpData(result.response.data)) {
       console.log(result.response.data.usageText);

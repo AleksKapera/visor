@@ -1,11 +1,12 @@
 import { DEFAULT_SERVER_URL, getAdapter } from './adapters.js';
 import {
-  DEFAULT_STARTUP_TIMEOUT_SECONDS,
-  isAppiumReachable,
-  startManagedAppium,
-  statusManagedAppium,
-  stopManagedAppium
-} from './appiumLifecycle.js';
+  DaemonUnavailableError,
+  runDaemonAction,
+  runDaemonScenario,
+  startVisorDaemon,
+  statusVisorDaemon,
+  stopVisorDaemon
+} from './daemon.js';
 import { makeError } from './errors.js';
 import { writeReports } from './report.js';
 import { determinismCheck, runScenario } from './runner.js';
@@ -43,9 +44,6 @@ interface RuntimeOptions {
   use_mock: boolean;
   app_id?: string;
   attach_to_running: boolean;
-  auto_start_appium: boolean;
-  appium_cmd?: string;
-  startup_timeout: number;
 }
 
 interface HelpData {
@@ -83,9 +81,6 @@ const GLOBAL_SPEC: Record<string, OptionType> = {
   seed: 'number',
   'server-url': 'string',
   'app-id': 'string',
-  'appium-cmd': 'string',
-  'startup-timeout': 'number',
-  'no-auto-start-appium': 'boolean',
   attach: 'boolean',
   mock: 'boolean',
   verbose: 'boolean'
@@ -117,9 +112,6 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     format: 'string',
     'server-url': 'string',
     'app-id': 'string',
-    'appium-cmd': 'string',
-    'startup-timeout': 'number',
-    'no-auto-start-appium': 'boolean',
     attach: 'boolean',
     mock: 'boolean'
   },
@@ -133,9 +125,6 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     format: 'string',
     'server-url': 'string',
     'app-id': 'string',
-    'appium-cmd': 'string',
-    'startup-timeout': 'number',
-    'no-auto-start-appium': 'boolean',
     attach: 'boolean',
     mock: 'boolean'
   },
@@ -143,7 +132,6 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
   start: {
     'server-url': 'string',
     'appium-cmd': 'string',
-    'startup-timeout': 'number',
     format: 'string'
   },
   status: {
@@ -177,13 +165,14 @@ function helpText(): string {
     '  run <scenario> [--mock] [--output <dir>]',
     '  benchmark <scenario> [--runs <n>] [--threshold <percent>]',
     '  report [path]',
-    '  start [--server-url <url>]',
+    '  start [--server-url <url>] [--appium-cmd <cmd>]',
     '  status [--server-url <url>]',
     '  stop [--server-url <url>] [--force]',
     '  tap|navigate|act|scroll|screenshot|wait|source',
     '',
     'Examples:',
     '  visor validate scenarios/checkout-smoke.json',
+    '  visor start --server-url http://127.0.0.1:4723',
     '  visor run scenarios/checkout-smoke.json --mock --output artifacts-test',
     '  visor scroll --platform android --mock --direction down',
     '  node dist/main.js status'
@@ -305,43 +294,8 @@ function resolvedRuntime(options: ParsedOptions, scenario: Scenario): RuntimeOpt
     server_url: String(options['server-url'] ?? DEFAULT_SERVER_URL),
     use_mock: Boolean(options.mock),
     app_id: typeof options['app-id'] === 'string' ? options['app-id'] : undefined,
-    attach_to_running: Boolean(options.attach),
-    auto_start_appium: !Boolean(options['no-auto-start-appium']),
-    appium_cmd: typeof options['appium-cmd'] === 'string' ? options['appium-cmd'] : undefined,
-    startup_timeout:
-      typeof options['startup-timeout'] === 'number'
-        ? options['startup-timeout']
-        : DEFAULT_STARTUP_TIMEOUT_SECONDS
+    attach_to_running: Boolean(options.attach)
   };
-}
-
-async function ensureNonMockRuntime(options: RuntimeOptions): Promise<Record<string, unknown>> {
-  if (await isAppiumReachable(options.server_url, 2000)) {
-    return {
-      serverUrl: options.server_url,
-      started: false
-    };
-  }
-
-  if (!options.auto_start_appium) {
-    throw new Error(
-      `Cannot reach Appium server at ${options.server_url}. Start Appium and ensure ${options.platform} target '${options.device}' is booted.`
-    );
-  }
-
-  return startManagedAppium(options.server_url, options.appium_cmd, options.startup_timeout);
-}
-
-async function stopAutoStartedAppium(runtimeState?: Record<string, unknown>): Promise<void> {
-  if (!runtimeState || !runtimeState.started || typeof runtimeState.serverUrl !== 'string') {
-    return;
-  }
-
-  try {
-    await stopManagedAppium(runtimeState.serverUrl, false);
-  } catch {
-    await stopManagedAppium(runtimeState.serverUrl, true);
-  }
 }
 
 function actionArgs(command: CommandName, options: ParsedOptions): Record<string, unknown> {
@@ -356,10 +310,7 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
     'mock',
     'seed',
     'app-id',
-    'attach',
-    'appium-cmd',
-    'startup-timeout',
-    'no-auto-start-appium'
+    'attach'
   ]);
   const args = Object.entries(options).reduce<Record<string, unknown>>((acc, [key, value]) => {
     if (!commonIgnored.has(key) && value !== undefined) {
@@ -384,6 +335,7 @@ function cmdHelp(): CommandResult {
     commands: Array.from(ALL_COMMANDS),
     examples: [
       'visor validate scenarios/checkout-smoke.json',
+      'visor start --server-url http://127.0.0.1:4723',
       'visor run scenarios/checkout-smoke.json --mock --output artifacts-test',
       'visor scroll --platform android --mock --direction down',
       'node dist/main.js status'
@@ -445,32 +397,37 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
   }
 
   const runtime = resolvedRuntime(parsed.options, scenario);
-  let runtimeState: Record<string, unknown> | undefined;
-  let cleanupError: unknown;
 
   try {
-    if (!runtime.use_mock) {
-      runtimeState = await ensureNonMockRuntime(runtime);
-    }
-
-    const adapter = await getAdapter(
-      runtime.platform,
-      runtime.server_url,
-      runtime.device,
-      runtime.use_mock,
-      runtime.app_id,
-      runtime.attach_to_running
-    );
-    const result = await runScenario(
-      scenario,
-      adapter,
-      runtime.device,
-      runtime.timeout,
-      runtime.output_dir
-    );
+    const result = runtime.use_mock
+      ? await runScenario(
+          scenario,
+          await getAdapter(
+            runtime.platform,
+            runtime.server_url,
+            runtime.device,
+            true,
+            runtime.app_id,
+            runtime.attach_to_running
+          ),
+          runtime.device,
+          runtime.timeout,
+          runtime.output_dir
+        )
+      : await runDaemonScenario(
+          {
+            platform: runtime.platform,
+            server_url: runtime.server_url,
+            device: runtime.device,
+            app_id: runtime.app_id,
+            attach_to_running: runtime.attach_to_running
+          },
+          scenario,
+          runtime.device,
+          runtime.timeout,
+          runtime.output_dir
+        );
     const outputs = writeReports(result, runtime.output_dir);
-
-    await stopAutoStartedAppium(runtimeState);
 
     if (result.status === 'fail' && result.error) {
       const response = envelopeFail(
@@ -502,15 +459,9 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
       'TARGET_ERROR',
       'Failed to initialize platform target',
       errorMessage(error),
-      'For local non-mock runs: install Node deps, run `visor start` (or remove --no-auto-start-appium), boot target emulator/simulator, and retry.'
+      'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
     );
     return { code: 1, response };
-  } finally {
-    try {
-      await stopAutoStartedAppium(runtimeState);
-    } catch (error) {
-      cleanupError = error;
-    }
   }
 }
 
@@ -539,83 +490,61 @@ export async function cmdBenchmark(parsed: ParsedCommand): Promise<CommandResult
   const signatures: string[] = [];
   const runIds: string[] = [];
   let failures = 0;
-  let runtimeState: Record<string, unknown> | undefined;
-  let cleanupError: unknown;
 
-  if (!runtime.use_mock) {
+  for (let index = 0; index < runs; index += 1) {
     try {
-      runtimeState = await ensureNonMockRuntime(runtime);
-    } catch (error) {
-      const response = envelopeFail(
-        commandId,
-        startedAt,
-        'TARGET_ERROR',
-        'Failed benchmark preflight for non-mock runtime',
-        errorMessage(error),
-        'Start Appium (or allow auto-start), verify local device target, then rerun benchmark'
-      );
-      return { code: 1, response };
-    }
-  }
-
-  try {
-    for (let index = 0; index < runs; index += 1) {
-      try {
-        const adapter = await getAdapter(
-          runtime.platform,
-          runtime.server_url,
-          runtime.device,
-          runtime.use_mock,
-          runtime.app_id,
-          runtime.attach_to_running
-        );
-        const result = await runScenario(
-          scenario,
-          adapter,
-          runtime.device,
-          runtime.timeout,
-          runtime.output_dir
-        );
-        writeReports(result, runtime.output_dir);
-        signatures.push(result.determinism_signature);
-        runIds.push(result.run_id);
-        if (result.status !== 'ok') {
-          failures += 1;
-        }
-      } catch {
+      const result = runtime.use_mock
+        ? await runScenario(
+            scenario,
+            await getAdapter(
+              runtime.platform,
+              runtime.server_url,
+              runtime.device,
+              true,
+              runtime.app_id,
+              runtime.attach_to_running
+            ),
+            runtime.device,
+            runtime.timeout,
+            runtime.output_dir
+          )
+        : await runDaemonScenario(
+            {
+              platform: runtime.platform,
+              server_url: runtime.server_url,
+              device: runtime.device,
+              app_id: runtime.app_id,
+              attach_to_running: runtime.attach_to_running
+            },
+            scenario,
+            runtime.device,
+            runtime.timeout,
+            runtime.output_dir
+          );
+      writeReports(result, runtime.output_dir);
+      signatures.push(result.determinism_signature);
+      runIds.push(result.run_id);
+      if (result.status !== 'ok') {
         failures += 1;
       }
-    }
-  } finally {
-    try {
-      await stopAutoStartedAppium(runtimeState);
     } catch (error) {
-      cleanupError = error;
+      if (!runtime.use_mock && error instanceof DaemonUnavailableError) {
+        const response = envelopeFail(
+          commandId,
+          startedAt,
+          'TARGET_ERROR',
+          'Benchmark requires visor start',
+          errorMessage(error),
+          'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
+        );
+        return { code: 1, response };
+      }
+      failures += 1;
     }
   }
 
   const score = determinismCheck(signatures);
   const passGate = score >= threshold && failures === 0;
-
-  if (cleanupError) {
-    const response = envelopeFail(
-      commandId,
-      startedAt,
-      'TARGET_ERROR',
-      'Benchmark completed but failed to stop auto-started Appium',
-      errorMessage(cleanupError),
-      'Inspect .visor/appium logs and stop Appium manually'
-    );
-    response.data = {
-      runs,
-      threshold,
-      determinismScore: score,
-      pass: false,
-      failures,
-      runIds
-    };
-    return { code: 1, response };
-  }
 
   const response = envelopeOk(commandId, startedAt, [], 'report');
   response.data = {
@@ -652,49 +581,38 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
     server_url: String(parsed.options['server-url'] ?? DEFAULT_SERVER_URL),
     use_mock: Boolean(parsed.options.mock),
     app_id: typeof parsed.options['app-id'] === 'string' ? parsed.options['app-id'] : undefined,
-    attach_to_running: Boolean(parsed.options.attach),
-    auto_start_appium: !Boolean(parsed.options['no-auto-start-appium']),
-    appium_cmd: typeof parsed.options['appium-cmd'] === 'string' ? parsed.options['appium-cmd'] : undefined,
-    startup_timeout:
-      typeof parsed.options['startup-timeout'] === 'number'
-        ? parsed.options['startup-timeout']
-        : DEFAULT_STARTUP_TIMEOUT_SECONDS
+    attach_to_running: Boolean(parsed.options.attach)
   };
 
-  let runtimeState: Record<string, unknown> | undefined;
-  let cleanupError: unknown;
   let payload: Record<string, unknown> = {};
   let artifacts: string[] = [];
   let actionError: unknown;
   let adapter;
 
   try {
-    if (!options.use_mock) {
-      runtimeState = await ensureNonMockRuntime({
-        platform: options.platform,
-        device:
-          options.device ?? (options.platform === 'android' ? 'emulator-5554' : 'iPhone 17 Pro'),
-        timeout: undefined,
-        output_dir: 'artifacts',
-        server_url: options.server_url,
-        use_mock: options.use_mock,
-        app_id: options.app_id,
-        attach_to_running: options.attach_to_running,
-        auto_start_appium: options.auto_start_appium,
-        appium_cmd: options.appium_cmd,
-        startup_timeout: options.startup_timeout
-      });
+    if (options.use_mock) {
+      adapter = await getAdapter(
+        options.platform,
+        options.server_url,
+        options.device,
+        true,
+        options.app_id,
+        options.attach_to_running
+      );
+      payload = await adapter[command](actionArgs(command, parsed.options));
+    } else {
+      payload = await runDaemonAction(
+        {
+          platform: options.platform,
+          server_url: options.server_url,
+          device: options.device ?? (options.platform === 'android' ? 'emulator-5554' : 'iPhone 17 Pro'),
+          app_id: options.app_id,
+          attach_to_running: options.attach_to_running
+        },
+        command,
+        actionArgs(command, parsed.options)
+      );
     }
-
-    adapter = await getAdapter(
-      options.platform,
-      options.server_url,
-      options.device,
-      options.use_mock,
-      options.app_id,
-      options.attach_to_running
-    );
-    payload = await adapter[command](actionArgs(command, parsed.options));
     const actionPayload = payload.args;
     if (actionPayload && typeof actionPayload === 'object' && !Array.isArray(actionPayload)) {
       const maybePath = (actionPayload as Record<string, unknown>).path;
@@ -708,38 +626,19 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
     if (adapter) {
       await adapter.close();
     }
-
-    try {
-      await stopAutoStartedAppium(runtimeState);
-    } catch (error) {
-      cleanupError = error;
-    }
   }
 
   if (actionError) {
-    const cause = cleanupError
-      ? `${errorMessage(actionError)}; additionally failed to stop auto-started Appium: ${errorMessage(cleanupError)}`
-      : errorMessage(actionError);
+    const isDaemonUnavailable = actionError instanceof DaemonUnavailableError;
     const response = envelopeFail(
       commandId,
       startedAt,
-      'ACTION_ERROR',
-      `${command} failed`,
-      cause,
-      'Check command args and retry'
-    );
-    response.data = payload;
-    return { code: 1, response };
-  }
-
-  if (cleanupError) {
-    const response = envelopeFail(
-      commandId,
-      startedAt,
-      'TARGET_ERROR',
-      `${command} completed but failed to stop auto-started Appium`,
-      errorMessage(cleanupError),
-      'Inspect .visor/appium logs and stop Appium manually'
+      isDaemonUnavailable ? 'TARGET_ERROR' : 'ACTION_ERROR',
+      isDaemonUnavailable ? `${command} requires visor start` : `${command} failed`,
+      errorMessage(actionError),
+      isDaemonUnavailable
+        ? 'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
+        : 'Check command args and retry'
     );
     response.data = payload;
     return { code: 1, response };
@@ -755,12 +654,9 @@ export async function cmdStart(parsed: ParsedCommand): Promise<CommandResult> {
   const startedAt = utcNowIso();
 
   try {
-    const status = await startManagedAppium(
+    const status = await startVisorDaemon(
       String(parsed.options['server-url'] ?? DEFAULT_SERVER_URL),
-      typeof parsed.options['appium-cmd'] === 'string' ? parsed.options['appium-cmd'] : undefined,
-      typeof parsed.options['startup-timeout'] === 'number'
-        ? parsed.options['startup-timeout']
-        : DEFAULT_STARTUP_TIMEOUT_SECONDS
+      typeof parsed.options['appium-cmd'] === 'string' ? parsed.options['appium-cmd'] : undefined
     );
     const response = envelopeOk(commandId, startedAt, [], 'run');
     response.data = status;
@@ -770,9 +666,9 @@ export async function cmdStart(parsed: ParsedCommand): Promise<CommandResult> {
       commandId,
       startedAt,
       'TARGET_ERROR',
-      'Failed to start Appium',
+      'Failed to start Visor daemon',
       errorMessage(error),
-      'Install Node deps, check --appium-cmd, and inspect .visor/appium/*.log'
+      'Install Node deps, check --appium-cmd, and inspect .visor/daemon/*.log'
     );
     return { code: 1, response };
   }
@@ -781,8 +677,9 @@ export async function cmdStart(parsed: ParsedCommand): Promise<CommandResult> {
 export async function cmdStatus(parsed: ParsedCommand): Promise<CommandResult> {
   const commandId = makeId('cmd');
   const startedAt = utcNowIso();
-  const status = await statusManagedAppium(String(parsed.options['server-url'] ?? DEFAULT_SERVER_URL));
-  const response = envelopeOk(commandId, startedAt, [], Boolean(status.reachable) ? 'run' : 'start');
+  const status = await statusVisorDaemon(String(parsed.options['server-url'] ?? DEFAULT_SERVER_URL));
+  const daemon = status.daemon as Record<string, unknown> | undefined;
+  const response = envelopeOk(commandId, startedAt, [], daemon?.running ? 'run' : 'start');
   response.data = status;
   return { code: 0, response };
 }
@@ -792,7 +689,7 @@ export async function cmdStop(parsed: ParsedCommand): Promise<CommandResult> {
   const startedAt = utcNowIso();
 
   try {
-    const result = await stopManagedAppium(
+    const result = await stopVisorDaemon(
       String(parsed.options['server-url'] ?? DEFAULT_SERVER_URL),
       Boolean(parsed.options.force)
     );
@@ -804,7 +701,7 @@ export async function cmdStop(parsed: ParsedCommand): Promise<CommandResult> {
       commandId,
       startedAt,
       'TARGET_ERROR',
-      'Failed to stop managed Appium',
+      'Failed to stop Visor daemon',
       errorMessage(error),
       'Retry with --force or check process state manually'
     );

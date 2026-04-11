@@ -16,7 +16,7 @@ For your first run, you can use mock mode. Mock mode does not require Appium, a 
 
 For real mobile runs, you also need:
 
-- a reachable Appium server, or permission for visor to auto-start one
+- a bootable Appium environment for the selected platform
 - a booted Android emulator or device, or an iOS simulator or device
 - the app identifier for the app you want visor to launch or attach to
 
@@ -124,13 +124,17 @@ visor writes a run directory under `artifacts-test/<run-id>/` with files such as
 When you are ready to run against an actual app, keep the same scenario command shape and add your runtime inputs:
 
 ```bash
+visor start --server-url http://127.0.0.1:4723
+```
+
+```bash
 visor run checkout-smoke.json \
   --platform android \
   --device emulator-5554 \
   --app-id com.example.app
 ```
 
-If Appium is not already reachable, visor attempts to start it unless you pass `--no-auto-start-appium`.
+Real runtime commands require the Visor daemon started by `visor start`. Use `visor status` to inspect the daemon and Appium state, and `visor stop` when you are done.
 
 <Warning>
 Real runtime execution requires a booted device target and a working Appium environment. If you only want to verify the CLI and report flow, stay in `--mock` mode first.
@@ -140,7 +144,7 @@ Real runtime execution requires a booted device target and a working Appium envi
 
 <CardGroup cols={2}>
   <Card title="Platforms and runtime" icon="smartphone" href="/platforms-and-runtime">
-    Review runtime defaults, Appium lifecycle behavior, and environment variables.
+    Review runtime defaults, daemon lifecycle behavior, and environment variables.
   </Card>
 
   <Card title="Scenarios" icon="list-checks" href="/features/scenarios">

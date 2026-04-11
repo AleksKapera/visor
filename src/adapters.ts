@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { remote } from 'webdriverio';
+import type { remote as remoteFn } from 'webdriverio';
 
 import type { AdapterCapability, Platform, PlatformAdapter } from './types.js';
 import { errorMessage, parseServerUrl, sleep } from './utils.js';
@@ -25,7 +25,7 @@ export const IOS_CLASS_CHAIN = '-ios class chain';
 
 type TapMode = 'target' | 'coordinates';
 type ScrollDirection = 'up' | 'down';
-type RemoteSession = Awaited<ReturnType<typeof remote>>;
+type RemoteSession = Awaited<ReturnType<typeof remoteFn>>;
 
 interface ParsedTarget {
   strategy: string;
@@ -435,6 +435,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
     }
 
     try {
+      const { remote } = await import('webdriverio');
       return await remote({
         protocol: server.protocol,
         hostname: server.host,

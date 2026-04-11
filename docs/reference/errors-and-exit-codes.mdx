@@ -10,7 +10,7 @@ visor uses five top-level error codes.
 | Error code | Meaning | Typical source |
 | --- | --- | --- |
 | `INPUT_ERROR` | The request or scenario input is invalid | Validation failures, schema issues, invalid platform |
-| `TARGET_ERROR` | The runtime target could not be initialized | Appium unreachable, missing driver dependencies, unsupported platform |
+| `TARGET_ERROR` | The runtime target could not be initialized | Visor daemon not running, Appium unreachable, missing driver dependencies, unsupported platform |
 | `ACTION_ERROR` | An action or step failed | Unsupported `act` variant, bad selector, invalid wait value, step timeout |
 | `ASSERTION_ERROR` | An assertion failed | Visibility target missing or unsupported assertion type |
 | `SYSTEM_ERROR` | Reserved for system-level failures | Not currently emitted by the main flows |
@@ -30,7 +30,8 @@ Common cases:
 
 Common cases:
 
-- Appium server cannot be reached in real runtime mode
+- Visor daemon is not running for a real runtime command
+- Appium server cannot be reached when running `visor start`
 - driver dependencies are not available in the runtime environment
 - runtime adapter cannot be initialized
 

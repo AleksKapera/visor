@@ -24,7 +24,7 @@ In real runtime mode, visor connects to an Appium server and interacts with an a
 
 What real runtime requires:
 
-- a reachable Appium server (or auto-start enabled)
+- a running Visor daemon from `visor start`
 - a booted iOS or Android target
 - installed Node runtime dependencies, including Appium and WebdriverIO
 - a valid app identifier or environment-based fallback
@@ -78,7 +78,7 @@ visor reads runtime configuration from environment variables when explicit runti
 | `VISOR_IOS_BUNDLE_ID` | iOS bundle identifier |
 | `VISOR_IOS_DEVICE` | iOS simulator or device name |
 | `VISOR_ATTACH_TO_RUNNING` | Reuse running app process (`true`/`1`/`yes`/`on`) |
-| `VISOR_APPIUM_CMD` | Command visor uses when it needs to launch Appium |
+| `VISOR_APPIUM_CMD` | Command `visor start` uses when it needs to launch Appium |
 
 Legacy `PATF_*` fallbacks are only supported for the mobile runtime variables implemented in the adapter layer:
 
@@ -117,17 +117,17 @@ When you pass `--attach` (or set `VISOR_ATTACH_TO_RUNNING=true`), visor asks App
 - Android capabilities used: `noReset=true`, `fullReset=false`, `autoLaunch=false`, `dontStopAppOnReset=true`
 - iOS capabilities used: `noReset=true`, `fullReset=false`, `autoLaunch=false`, `shouldTerminateApp=false`, `forceAppLaunch=false`
 
-## Appium lifecycle and connectivity preflight
+## Runtime lifecycle and connectivity preflight
 
-For scenario execution and direct action commands in real runtime mode, visor performs a preflight check against the Appium host and port.
+For scenario execution and direct action commands in real runtime mode, start the Visor daemon first:
 
-If Appium is unreachable and auto-start is enabled (default), visor attempts to launch Appium first.
+```bash
+visor start
+```
 
-If Appium is unreachable and auto-start is disabled (`--no-auto-start-appium`), visor fails early with a target initialization error.
+`visor start` ensures Appium is reachable and starts a local daemon that keeps WebDriver sessions warm for subsequent commands. Real runtime commands fail early if the daemon is not running. Mock commands do not require the daemon.
 
-When visor auto-starts Appium for a command, it also stops that managed Appium process when the command completes.
-
-You can also manage lifecycle explicitly with:
+Manage lifecycle with:
 
 - `visor start`
 - `visor status`

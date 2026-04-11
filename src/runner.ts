@@ -89,7 +89,8 @@ export async function runScenario(
   adapter: PlatformAdapter,
   device = 'local',
   timeoutMs?: number,
-  artifactBaseDir?: string
+  artifactBaseDir?: string,
+  closeAdapter = true
 ): Promise<RunResult> {
   const started_at = utcNowIso();
   const run_id = makeId('run');
@@ -226,7 +227,9 @@ export async function runScenario(
       error: topError
     };
   } finally {
-    await adapter.close();
+    if (closeAdapter) {
+      await adapter.close();
+    }
   }
 }
 

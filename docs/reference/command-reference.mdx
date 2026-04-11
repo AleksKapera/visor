@@ -20,9 +20,6 @@ These inputs are accepted globally and, where relevant, by individual commands.
 | `format` | `text` or `json` |
 | `server-url` | Appium server URL |
 | `app-id` | Android app package or iOS bundle identifier; on iOS it must match an installed app on the selected target |
-| `appium-cmd` | Override command used to launch Appium |
-| `startup-timeout` | Seconds to wait for Appium to become reachable after startup |
-| `no-auto-start-appium` | Disable auto-start and fail if Appium is unreachable |
 | `attach` | Attach to an already running app process when possible |
 | `mock` | Use mock runtime instead of a real device |
 
@@ -165,7 +162,7 @@ Returns action payload fields:
 - `args.format`
 - `args.bytes`
 
-For direct action commands, if Appium is auto-started for the command, visor stops that managed Appium process before returning.
+For real-device direct action commands, run `visor start` first. Mock commands do not require the daemon.
 
 ## Scenario commands
 
@@ -204,9 +201,6 @@ Optional runtime inputs:
 - `output`
 - `server-url`
 - `app-id`
-- `appium-cmd`
-- `startup-timeout`
-- `no-auto-start-appium`
 - `attach`
 - `mock`
 
@@ -217,7 +211,7 @@ Response data fields:
 
 The `run` object contains the full run result, including step results, assertion results, artifacts, determinism signature, and run-level error data.
 
-If Appium is auto-started for this command, visor stops that managed Appium process before returning.
+For real-device scenario runs, run `visor start` first. Mock runs do not require the daemon.
 
 ### `benchmark`
 
@@ -243,7 +237,7 @@ Response data fields:
 - `runIds`
 - `warnings`
 
-If Appium is auto-started for this command, visor stops that managed Appium process before returning.
+For real-device benchmark runs, run `visor start` first. Mock benchmarks do not require the daemon.
 
 ### `report`
 
@@ -259,33 +253,26 @@ Response data fields:
 - `path`
 - `format`
 
-## Appium lifecycle commands
+## Runtime lifecycle commands
 
 ### `start`
 
-Purpose: start Appium when unreachable or return current reachable status.
+Purpose: start the Visor daemon and ensure Appium is reachable.
 
 Optional inputs:
 
 - `server-url`
 - `appium-cmd`
-- `startup-timeout`
 
 Response data fields:
 
 - `serverUrl`
-- `reachable`
-- `managed`
-- `pid`
-- `command`
-- `metadataPath`
-- `logPath`
-- `started`
-- `alreadyRunning`
+- `daemon`
+- `appium`
 
 ### `status`
 
-Purpose: report whether Appium is reachable and whether it is managed by visor.
+Purpose: report Visor daemon state, Appium reachability, and warm sessions.
 
 Optional inputs:
 
@@ -294,16 +281,12 @@ Optional inputs:
 Response data fields:
 
 - `serverUrl`
-- `reachable`
-- `managed`
-- `pid`
-- `command`
-- `metadataPath`
-- `logPath`
+- `daemon`
+- `appium`
 
 ### `stop`
 
-Purpose: stop a visor-managed Appium process for the given server URL.
+Purpose: close warm sessions and stop the Visor daemon.
 
 Optional inputs:
 
@@ -314,12 +297,8 @@ Response data fields:
 
 - `serverUrl`
 - `stopped`
-- `managed`
-- `reason`
-- `pid`
-- `reachable`
-- `metadataPath`
-- `logPath`
+- `daemon`
+- `appium`
 
 ## Response envelope behavior
 
