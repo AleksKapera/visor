@@ -158,7 +158,10 @@ export function isRecoverableSessionCacheError(error: unknown): boolean {
   return (
     message.includes('session is either terminated or not started') ||
     message.includes('invalid session id') ||
-    message.includes('no such driver')
+    message.includes('no such driver') ||
+    (message.includes('could not proxy command to the remote server') &&
+      message.includes('econnrefused')) ||
+    (message.includes('127.0.0.1:8100') && message.includes('econnrefused'))
   );
 }
 
