@@ -66,6 +66,15 @@ export class DaemonUnavailableError extends Error {
   }
 }
 
+export class DaemonRequestTimeoutError extends Error {
+  constructor(requestType: string, timeoutMs: number) {
+    super(
+      `Timed out after ${timeoutMs}ms waiting for the Visor daemon to finish '${requestType}'. Inspect .visor/daemon/daemon.log and .visor/appium/*.log for the underlying Appium operation.`
+    );
+    this.name = 'DaemonRequestTimeoutError';
+  }
+}
+
 function daemonDir(): string {
   return ensureDir(path.join(process.cwd(), '.visor', 'daemon'));
 }
@@ -122,7 +131,10 @@ function pidExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
+      return true;
+    }
     return false;
   }
 }
@@ -139,6 +151,15 @@ function runtimeKey(runtime: RuntimeKeyInput): string {
 
 function parseBoolean(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').toLowerCase());
+}
+
+export function isRecoverableSessionCacheError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return (
+    message.includes('session is either terminated or not started') ||
+    message.includes('invalid session id') ||
+    message.includes('no such driver')
+  );
 }
 
 async function requestDaemon(request: DaemonRequest, timeoutMs = 1000): Promise<DaemonResponse> {
@@ -177,7 +198,7 @@ async function requestDaemon(request: DaemonRequest, timeoutMs = 1000): Promise<
       }
     });
     client.on('timeout', () => {
-      settle(new DaemonUnavailableError('Timed out waiting for the Visor daemon.'));
+      settle(new DaemonRequestTimeoutError(request.type, timeoutMs));
     });
     client.on('error', () => {
       settle(new DaemonUnavailableError());
@@ -253,6 +274,13 @@ export async function startVisorDaemon(
   }
   cleanupMetadata();
 
+  const appiumStatus = await statusManagedAppium(serverUrl);
+  if (Boolean(appiumStatus.reachable) && !Boolean(appiumStatus.managed)) {
+    throw new Error(
+      `Appium is already reachable at ${serverUrl}, but it is not managed by Visor. Stop the existing Appium process or choose a different --server-url, then run \`visor start\` again.`
+    );
+  }
+
   const appium = await startManagedAppium(
     serverUrl,
     appiumCmd,
@@ -318,15 +346,18 @@ export async function statusVisorDaemon(serverUrl = DEFAULT_SERVER_URL): Promise
   const meta = readMetadata();
   let daemonData: Record<string, unknown> = {};
   let running = false;
+  let daemonError: string | undefined;
 
+  const pidPresent = meta ? pidExists(meta.pid) : false;
   try {
-    daemonData = await daemonRequestData<Record<string, unknown>>({ type: 'status' }, 500);
+    daemonData = await daemonRequestData<Record<string, unknown>>({ type: 'status' }, 2000);
     running = true;
-  } catch {
+  } catch (error) {
     running = false;
+    daemonError = errorMessage(error);
   }
 
-  if (meta && !running && !pidExists(meta.pid)) {
+  if (meta && !running && !pidPresent) {
     cleanupMetadata();
   }
 
@@ -334,11 +365,14 @@ export async function statusVisorDaemon(serverUrl = DEFAULT_SERVER_URL): Promise
     serverUrl,
     daemon: {
       running,
-      pid: running ? (meta?.pid ?? null) : null,
+      responsive: running,
+      unresponsive: Boolean(meta && pidPresent && !running),
+      pid: meta?.pid ?? null,
       socketPath: socketPath(),
       metadataPath: metadataPath(),
       logPath: logPath(),
       appiumStarted: running ? (meta?.appiumStarted ?? false) : false,
+      error: daemonError,
       ...daemonData
     },
     appium: await statusManagedAppium(serverUrl)
@@ -355,7 +389,7 @@ export async function stopVisorDaemon(
   try {
     daemonResponse = await daemonRequestData<Record<string, unknown>>({ type: 'stop', force }, 5000);
   } catch (error) {
-    if (!(error instanceof DaemonUnavailableError)) {
+    if (!(error instanceof DaemonUnavailableError) && !(error instanceof DaemonRequestTimeoutError)) {
       throw error;
     }
   }
@@ -368,6 +402,23 @@ export async function stopVisorDaemon(
 
     if (pidExists(meta.pid) && force) {
       process.kill(meta.pid, 'SIGKILL');
+    }
+
+    if (pidExists(meta.pid)) {
+      return {
+        serverUrl,
+        stopped: false,
+        daemon: {
+          running: false,
+          unresponsive: true,
+          reason: 'daemon_did_not_stop',
+          pid: meta.pid,
+          socketPath: socketPath(),
+          metadataPath: metadataPath(),
+          logPath: logPath()
+        },
+        appium: await statusManagedAppium(serverUrl)
+      };
     }
   }
 
@@ -405,7 +456,7 @@ export async function runDaemonAction(
   command: CommandName,
   args: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  return daemonRequestData<Record<string, unknown>>({ type: 'action', runtime, command, args }, 120000);
+  return daemonRequestData<Record<string, unknown>>({ type: 'action', runtime, command, args }, 300000);
 }
 
 export async function runDaemonScenario(
@@ -428,12 +479,18 @@ export async function runDaemonFromEnv(): Promise<void> {
   };
   const sessions = new Map<string, SessionEntry>();
   let queue = Promise.resolve();
+  let activeOperation: string | null = null;
+  let lastError: string | null = null;
 
   async function closeSessions(): Promise<void> {
     const entries = Array.from(sessions.values());
     sessions.clear();
     for (const entry of entries) {
-      await entry.adapter.close();
+      try {
+        await entry.adapter.close();
+      } catch {
+        // Stopping the daemon should still succeed if Appium already dropped the session.
+      }
     }
   }
 
@@ -460,8 +517,45 @@ export async function runDaemonFromEnv(): Promise<void> {
     return adapter;
   }
 
+  async function discardSession(runtime: RuntimeKeyInput): Promise<void> {
+    const key = runtimeKey(runtime);
+    const existing = sessions.get(key);
+    if (!existing) {
+      return;
+    }
+
+    sessions.delete(key);
+    try {
+      await existing.adapter.close();
+    } catch {
+      // The backing WebDriver session is already gone; removing it from the cache is enough.
+    }
+  }
+
+  async function runActionWithSessionRetry(
+    runtime: RuntimeKeyInput,
+    command: CommandName,
+    args: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const adapter = await sessionFor(runtime);
+    try {
+      return await adapter[command](args);
+    } catch (error) {
+      if (!isRecoverableSessionCacheError(error)) {
+        throw error;
+      }
+
+      await discardSession(runtime);
+      const freshAdapter = await sessionFor(runtime);
+      return freshAdapter[command](args);
+    }
+  }
+
   function enqueue<T>(work: () => Promise<T>): Promise<T> {
-    const run = queue.then(work, work);
+    const run = queue.then(work, work).catch((error) => {
+      lastError = errorMessage(error);
+      throw error;
+    });
     queue = run.then(
       () => undefined,
       () => undefined
@@ -486,6 +580,8 @@ export async function runDaemonFromEnv(): Promise<void> {
             response = {
               ok: true,
               data: {
+                activeOperation,
+                lastError,
                 sessions: Array.from(sessions.entries()).map(([key, entry]) => ({
                   key,
                   runtime: entry.runtime,
@@ -494,7 +590,7 @@ export async function runDaemonFromEnv(): Promise<void> {
               }
             };
           } else if (request.type === 'stop') {
-            await enqueue(closeSessions);
+            await closeSessions();
             response = {
               ok: true,
               data: {
@@ -504,26 +600,41 @@ export async function runDaemonFromEnv(): Promise<void> {
               }
             };
             socket.end(`${JSON.stringify(response)}\n`, () => {
-              server.close();
+              server.close(() => {
+                process.exit(0);
+              });
             });
             return;
           } else if (request.type === 'action') {
             const data = await enqueue(async () => {
-              const adapter = await sessionFor(request.runtime);
-              return adapter[request.command](request.args);
+              activeOperation = `${request.command}:${runtimeKey(request.runtime)}`;
+              try {
+                return await runActionWithSessionRetry(
+                  request.runtime,
+                  request.command,
+                  request.args
+                );
+              } finally {
+                activeOperation = null;
+              }
             });
             response = { ok: true, data };
           } else {
             const data = await enqueue(async () => {
-              const adapter = await sessionFor(request.runtime);
-              return runScenario(
-                request.scenario,
-                adapter,
-                request.device,
-                request.timeout,
-                request.outputDir,
-                false
-              );
+              activeOperation = `scenario:${runtimeKey(request.runtime)}`;
+              try {
+                const adapter = await sessionFor(request.runtime);
+                return await runScenario(
+                  request.scenario,
+                  adapter,
+                  request.device,
+                  request.timeout,
+                  request.outputDir,
+                  false
+                );
+              } finally {
+                activeOperation = null;
+              }
             });
             response = { ok: true, data };
           }

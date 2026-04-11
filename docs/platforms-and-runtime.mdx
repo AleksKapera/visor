@@ -79,6 +79,8 @@ visor reads runtime configuration from environment variables when explicit runti
 | `VISOR_IOS_DEVICE` | iOS simulator or device name |
 | `VISOR_ATTACH_TO_RUNNING` | Reuse running app process (`true`/`1`/`yes`/`on`) |
 | `VISOR_APPIUM_CMD` | Command `visor start` uses when it needs to launch Appium |
+| `VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS` | WebDriverIO request timeout for Appium calls |
+| `VISOR_WEBDRIVER_CONNECTION_RETRY_COUNT` | WebDriverIO retry count for Appium calls |
 
 Legacy `PATF_*` fallbacks are only supported for the mobile runtime variables implemented in the adapter layer:
 
@@ -126,6 +128,8 @@ visor start
 ```
 
 `visor start` ensures Appium is reachable and starts a local daemon that keeps WebDriver sessions warm for subsequent commands. Real runtime commands fail early if the daemon is not running. Mock commands do not require the daemon.
+
+If another Appium process is already listening on the selected `server-url`, `visor start` fails instead of reusing it. Stop the existing Appium process or choose a different `--server-url` so Visor owns the Appium lifecycle.
 
 Manage lifecycle with:
 

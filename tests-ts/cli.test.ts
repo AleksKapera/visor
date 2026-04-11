@@ -236,9 +236,12 @@ describe('typescript cli', () => {
 
   it('returns status output for unmanaged appium', async () => {
     const originalSocket = process.env.VISOR_DAEMON_SOCKET_PATH;
-    process.env.VISOR_DAEMON_SOCKET_PATH = path.join(tempOutputDir(), 'missing.sock');
+    const originalCwd = process.cwd();
+    const outputDir = tempOutputDir();
+    process.env.VISOR_DAEMON_SOCKET_PATH = path.join(outputDir, 'missing.sock');
 
     try {
+      process.chdir(outputDir);
       const result = await executeCommand(['status', '--server-url', 'http://127.0.0.1:4723']);
       const data = responseData<{ daemon: { running: boolean }; appium: { managed: boolean } }>(
         result.response.data
@@ -253,6 +256,8 @@ describe('typescript cli', () => {
       } else {
         process.env.VISOR_DAEMON_SOCKET_PATH = originalSocket;
       }
+      process.chdir(originalCwd);
+      fs.rmSync(outputDir, { recursive: true, force: true });
     }
   });
 

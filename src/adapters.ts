@@ -46,6 +46,21 @@ function envBool(preferred: string, legacy: string, defaultValue = false): boole
   return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
 }
 
+function envNumber(preferred: string, defaultValue: number): number {
+  const raw = process.env[preferred];
+  if (raw === undefined) {
+    return defaultValue;
+  }
+
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+export function resolveWebdriverConnectionTimeout(platform: Platform): number {
+  const defaultTimeout = platform === 'ios' ? 240000 : 60000;
+  return envNumber('VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS', defaultTimeout);
+}
+
 function pngDimensions(filePath: string): { width: number | null; height: number | null } {
   try {
     const header = fs.readFileSync(filePath).subarray(0, 24);
@@ -79,6 +94,10 @@ export function formatDriverCreationError(
       ? ' When using --attach, launch that app on the simulator/device first.'
       : '';
     return `Failed to create WebdriverIO Appium session: ${message}. On iOS, --app-id must be the exact installed bundle identifier for the target app (${targetApp}). Android package names do not carry over automatically.${attachHint}`;
+  }
+
+  if (platform === 'ios' && (message.includes('CoreSimulatorService') || message.includes('simctl'))) {
+    return `Failed to create WebdriverIO Appium session: ${message}. iOS simulator access failed before the command ran; verify \`xcrun simctl list\` works from the same shell and that Appium is not running in a sandboxed process.`;
   }
 
   return `Failed to create WebdriverIO Appium session: ${message}`;
@@ -442,7 +461,9 @@ export class RealAppiumAdapter implements PlatformAdapter {
         port: server.port,
         path: server.pathname,
         capabilities,
-        logLevel: 'error'
+        logLevel: 'error',
+        connectionRetryCount: envNumber('VISOR_WEBDRIVER_CONNECTION_RETRY_COUNT', 0),
+        connectionRetryTimeout: resolveWebdriverConnectionTimeout(this.platform)
       });
     } catch (error) {
       throw new Error(

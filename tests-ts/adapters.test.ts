@@ -4,6 +4,7 @@ import {
   MockAdapter,
   formatDriverCreationError,
   parseTarget,
+  resolveWebdriverConnectionTimeout,
   resolveTapMode,
   XPATH
 } from '../src/adapters.js';
@@ -51,6 +52,37 @@ describe('adapter selector helpers', () => {
     expect(message).toContain('exact installed bundle identifier');
     expect(message).toContain('Android package names do not carry over automatically');
     expect(message).toContain('launch that app on the simulator/device first');
+  });
+
+  it('adds an iOS simulator service hint for simctl failures', () => {
+    const message = formatDriverCreationError(
+      'ios',
+      'com.example.emptyApp',
+      true,
+      new Error('WebDriverError: Error running list: Unable to lookup com.apple.CoreSimulator.CoreSimulatorService')
+    );
+
+    expect(message).toContain('xcrun simctl list');
+    expect(message).toContain('sandboxed process');
+  });
+
+  it('allows slower first-time WebDriverAgent startup on iOS', () => {
+    const previous = process.env.VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS;
+    delete process.env.VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS;
+
+    try {
+      expect(resolveWebdriverConnectionTimeout('android')).toBe(60000);
+      expect(resolveWebdriverConnectionTimeout('ios')).toBe(240000);
+
+      process.env.VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS = '120000';
+      expect(resolveWebdriverConnectionTimeout('ios')).toBe(120000);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS;
+      } else {
+        process.env.VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS = previous;
+      }
+    }
   });
 
   it('includes scroll in adapter capabilities', () => {

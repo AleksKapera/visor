@@ -1,5 +1,6 @@
 import { DEFAULT_SERVER_URL, getAdapter } from './adapters.js';
 import {
+  DaemonRequestTimeoutError,
   DaemonUnavailableError,
   runDaemonAction,
   runDaemonScenario,
@@ -326,6 +327,32 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
   return args;
 }
 
+function isTargetInitializationError(error: unknown): boolean {
+  const message = errorMessage(error);
+  return (
+    message.includes('Failed to create WebdriverIO Appium session') ||
+    message.includes('CoreSimulatorService') ||
+    message.includes('Could not find a driver for automationName')
+  );
+}
+
+function targetInitializationNextStep(error: unknown): string {
+  const message = errorMessage(error);
+  if (message.includes('CoreSimulatorService') || message.includes('simctl')) {
+    return 'Run `xcrun simctl list` from the same shell. If it fails, restart Simulator/CoreSimulator and ensure Appium is not running from a sandboxed process.';
+  }
+
+  if (message.includes('Could not find a driver for automationName')) {
+    return 'Install the matching Appium driver, verify it with `appium driver list --installed`, then restart `visor start`.';
+  }
+
+  if (message.includes('bundle identifier') && message.includes('unknown')) {
+    return 'Verify the iOS bundle id is installed on the selected simulator/device, launch it first when using `--attach`, then retry.';
+  }
+
+  return 'Verify Appium driver setup, target device state, and app id, then retry.';
+}
+
 function cmdHelp(): CommandResult {
   const commandId = makeId('cmd');
   const startedAt = utcNowIso();
@@ -453,13 +480,23 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
     };
     return { code: 0, response };
   } catch (error) {
+    const isDaemonUnavailable = error instanceof DaemonUnavailableError;
+    const isDaemonTimeout = error instanceof DaemonRequestTimeoutError;
     const response = envelopeFail(
       commandId,
       startedAt,
       'TARGET_ERROR',
-      'Failed to initialize platform target',
+      isDaemonUnavailable
+        ? 'Run requires visor start'
+        : isDaemonTimeout
+          ? 'Timed out waiting for Visor daemon'
+          : 'Failed to initialize platform target',
       errorMessage(error),
-      'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
+      isDaemonUnavailable
+        ? 'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
+        : isDaemonTimeout
+          ? 'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
+          : 'Verify the target emulator/simulator and Appium driver setup, then retry.'
     );
     return { code: 1, response };
   }
@@ -536,6 +573,17 @@ export async function cmdBenchmark(parsed: ParsedCommand): Promise<CommandResult
           'Benchmark requires visor start',
           errorMessage(error),
           'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
+        );
+        return { code: 1, response };
+      }
+      if (!runtime.use_mock && error instanceof DaemonRequestTimeoutError) {
+        const response = envelopeFail(
+          commandId,
+          startedAt,
+          'TARGET_ERROR',
+          'Timed out waiting for Visor daemon',
+          errorMessage(error),
+          'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
         );
         return { code: 1, response };
       }
@@ -630,15 +678,27 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
 
   if (actionError) {
     const isDaemonUnavailable = actionError instanceof DaemonUnavailableError;
+    const isDaemonTimeout = actionError instanceof DaemonRequestTimeoutError;
+    const isTargetInitialization = isTargetInitializationError(actionError);
     const response = envelopeFail(
       commandId,
       startedAt,
-      isDaemonUnavailable ? 'TARGET_ERROR' : 'ACTION_ERROR',
-      isDaemonUnavailable ? `${command} requires visor start` : `${command} failed`,
+      isDaemonUnavailable || isDaemonTimeout || isTargetInitialization ? 'TARGET_ERROR' : 'ACTION_ERROR',
+      isDaemonUnavailable
+        ? `${command} requires visor start`
+        : isDaemonTimeout
+          ? `${command} timed out waiting for Visor daemon`
+          : isTargetInitialization
+            ? `${command} failed to initialize platform target`
+            : `${command} failed`,
       errorMessage(actionError),
       isDaemonUnavailable
         ? 'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
-        : 'Check command args and retry'
+        : isDaemonTimeout
+          ? 'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
+          : isTargetInitialization
+            ? targetInitializationNextStep(actionError)
+            : 'Check command args and retry'
     );
     response.data = payload;
     return { code: 1, response };
@@ -679,7 +739,12 @@ export async function cmdStatus(parsed: ParsedCommand): Promise<CommandResult> {
   const startedAt = utcNowIso();
   const status = await statusVisorDaemon(String(parsed.options['server-url'] ?? DEFAULT_SERVER_URL));
   const daemon = status.daemon as Record<string, unknown> | undefined;
-  const response = envelopeOk(commandId, startedAt, [], daemon?.running ? 'run' : 'start');
+  const response = envelopeOk(
+    commandId,
+    startedAt,
+    [],
+    daemon?.running ? 'run' : daemon?.unresponsive ? 'stop' : 'start'
+  );
   response.data = status;
   return { code: 0, response };
 }
