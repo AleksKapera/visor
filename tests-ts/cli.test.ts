@@ -13,6 +13,13 @@ function responseData<T>(value: unknown): T {
   return value as T;
 }
 
+function packageVersion(): string {
+  const packageJson = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8')) as {
+    version?: unknown;
+  };
+  return typeof packageJson.version === 'string' ? packageJson.version : 'unknown';
+}
+
 async function withMissingDaemonSocket<T>(work: () => Promise<T>): Promise<T> {
   const originalSocket = process.env.VISOR_DAEMON_SOCKET_PATH;
   const socketDir = tempOutputDir();
@@ -53,9 +60,28 @@ describe('typescript cli', () => {
     expect(result.response.status).toBe('ok');
     expect(data.usageText).toContain('Visor TypeScript CLI');
     expect(data.usageText).toContain('visor status');
+    expect(data.usageText).toContain('visor --help | -h');
+    expect(data.usageText).toContain('visor --version | -v');
     expect(data.usageText).not.toContain('node dist/main.js status');
     expect(data.commands).toContain('run');
     expect(data.commands).toContain('scroll');
+  });
+
+  it('returns package version for --version', async () => {
+    const result = await executeCommand(['--version']);
+    const data = responseData<{ version: string; versionText: string }>(result.response.data);
+    expect(result.code).toBe(0);
+    expect(result.response.status).toBe('ok');
+    expect(data.version).toBe(packageVersion());
+    expect(data.versionText).toBe(packageVersion());
+  });
+
+  it('returns package version for -v', async () => {
+    const result = await executeCommand(['-v']);
+    const data = responseData<{ version: string }>(result.response.data);
+    expect(result.code).toBe(0);
+    expect(result.response.status).toBe('ok');
+    expect(data.version).toBe(packageVersion());
   });
 
   it('returns help when no command is provided', async () => {

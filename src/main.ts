@@ -18,6 +18,15 @@ function isHelpData(value: unknown): value is { usageText: string } {
   );
 }
 
+function isVersionData(value: unknown): value is { versionText: string } {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      'versionText' in value &&
+      typeof (value as { versionText: unknown }).versionText === 'string'
+  );
+}
+
 async function main(argv = process.argv.slice(2)): Promise<number> {
   try {
     if (argv[0] === '__daemon') {
@@ -28,6 +37,8 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     const result = await executeCommand(argv);
     if (isHelpData(result.response.data)) {
       console.log(result.response.data.usageText);
+    } else if (isVersionData(result.response.data)) {
+      console.log(result.response.data.versionText);
     } else {
       console.log(JSON.stringify(result.response, null, 2));
     }

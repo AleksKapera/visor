@@ -5,7 +5,7 @@ description: "See every visor command, the inputs it accepts, and the shape of t
 
 This page documents the current command surface exactly as implemented.
 
-If you run `visor --help` or invoke the CLI with no command, visor prints a usage summary instead of a JSON response envelope.
+If you run `visor --help`, `visor -h`, or invoke the CLI with no command, visor prints a usage summary instead of a JSON response envelope. `visor --version` and `visor -v` print the package version instead of a JSON response envelope.
 
 ## Global runtime inputs
 
@@ -24,7 +24,8 @@ These inputs are accepted globally and, where relevant, by individual commands.
 Important notes:
 
 - `format` is currently informational only for normal commands; the implementation still returns JSON envelopes
-- `visor --help` and no-command invocation print plain-text usage instead of JSON
+- `visor --help`, `visor -h`, and no-command invocation print plain-text usage instead of JSON
+- `visor --version` and `visor -v` print the package version instead of JSON
 - `platform` is inferred from the selected device; `--platform` is not accepted
 
 ## Direct action commands
@@ -311,4 +312,4 @@ Every command returns the same top-level envelope fields:
 
 `next_action` is a hint, not an execution chain. Examples include `run`, `report`, and `none`.
 
-Help output is the exception: `visor --help` and no-command invocation print usage text instead of an envelope.
+Help and version output are the exceptions: `visor --help`, `visor -h`, and no-command invocation print usage text instead of an envelope, while `visor --version` and `visor -v` print the package version.

@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import { DEFAULT_SERVER_URL } from './adapters.js';
 import {
   DaemonRequestTimeoutError,
@@ -51,6 +53,22 @@ interface HelpData {
   usageText: string;
   commands: string[];
   examples: string[];
+}
+
+interface VersionData {
+  version: string;
+  versionText: string;
+}
+
+function packageVersion(): string {
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      version?: unknown;
+    };
+    return typeof packageJson.version === 'string' ? packageJson.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 const ACTION_COMMANDS = new Set<CommandName>([
@@ -153,7 +171,8 @@ function helpText(): string {
     '',
     'Usage:',
     '  visor <command> [options]',
-    '  visor --help',
+    '  visor --help | -h',
+    '  visor --version | -v',
     '',
     'Commands:',
     '  validate <scenario>',
@@ -357,6 +376,18 @@ function cmdHelp(): CommandResult {
       'visor status'
     ]
   } satisfies HelpData;
+  return { code: 0, response };
+}
+
+function cmdVersion(): CommandResult {
+  const commandId = makeId('cmd');
+  const startedAt = utcNowIso();
+  const version = packageVersion();
+  const response = envelopeOk(commandId, startedAt, [], 'none');
+  response.data = {
+    version,
+    versionText: version
+  } satisfies VersionData;
   return { code: 0, response };
 }
 
@@ -790,6 +821,10 @@ export async function executeCommand(argv: string[]): Promise<CommandResult> {
     argv.includes('-h')
   ) {
     return cmdHelp();
+  }
+
+  if (argv.includes('--version') || argv.includes('-v')) {
+    return cmdVersion();
   }
 
   const parsed = parseCommand(argv);
