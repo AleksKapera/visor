@@ -170,7 +170,7 @@ function helpText(): string {
     '  visor start --server-url http://127.0.0.1:4723',
     '  visor run scenarios/checkout-smoke.json --output artifacts-test',
     '  visor scroll --device emulator-5554 --direction down',
-    '  node dist/main.js status'
+    '  visor status'
   ].join('\n');
 }
 
@@ -354,7 +354,7 @@ function cmdHelp(): CommandResult {
       'visor start --server-url http://127.0.0.1:4723',
       'visor run scenarios/checkout-smoke.json --output artifacts-test',
       'visor scroll --device emulator-5554 --direction down',
-      'node dist/main.js status'
+      'visor status'
     ]
   } satisfies HelpData;
   return { code: 0, response };

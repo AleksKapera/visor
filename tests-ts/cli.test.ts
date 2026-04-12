@@ -52,6 +52,8 @@ describe('typescript cli', () => {
     expect(result.code).toBe(0);
     expect(result.response.status).toBe('ok');
     expect(data.usageText).toContain('Visor TypeScript CLI');
+    expect(data.usageText).toContain('visor status');
+    expect(data.usageText).not.toContain('node dist/main.js status');
     expect(data.commands).toContain('run');
     expect(data.commands).toContain('scroll');
   });
