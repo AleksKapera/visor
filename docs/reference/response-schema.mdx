@@ -46,6 +46,7 @@ When a scenario run succeeds or fails, `data.run` contains a run result.
 | `artifacts` | array of string | Final copied artifact paths |
 | `determinism_signature` | string | SHA-256 signature of normalized run data |
 | `seed` | number | Present when the scenario provides a seed |
+| `map` | object | Present when mapped execution was considered for the run |
 | `error` | object | Present when the run failed |
 
 ## Step result
@@ -58,6 +59,23 @@ When a scenario run succeeds or fails, `data.run` contains a run result.
 | `duration_ms` | number | Step duration |
 | `details` | object | Adapter-returned payload |
 | `error` | object | Present when the step failed |
+
+## Map metadata
+
+Mapped execution metadata uses these fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `enabled` | boolean | Whether map reads and writes were enabled |
+| `used` | boolean | Whether Visor used cached map knowledge for routing |
+| `updated` | boolean | Whether the host app map changed during the command |
+| `repaired` | boolean | Whether Visor repaired a stale or missing route |
+| `repairs` | number | Count of bounded repair passes used |
+| `schema_version` | number | App-map schema version |
+| `path` | string | Host path to the persisted app map when enabled |
+| `identity` | string | App-map identity, scoped by platform and app id |
+
+Direct action commands return this object in `data.map`. Scenario runs return it in `data.run.map`. A routed or repaired step may also include `details.map.route`, an ordered list of hidden route actions Visor performed before the requested step action.
 
 ## Assertion result
 

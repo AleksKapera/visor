@@ -1,0 +1,52 @@
+---
+title: "App map"
+description: "Understand mapped execution, cached navigation, repair, and no-map mode."
+---
+
+Visor keeps a local app map so repeated mobile runs can reuse navigation it has already observed.
+
+Mapped execution is enabled by default for direct target actions and scenario runs. Before a mapped target action, Visor reads lightweight UI source, matches the current screen variant, and checks whether the target is already visible. If not, it searches the app map for a known screen containing that target, replays a confirmed route, verifies the destination contract, and then performs the requested action.
+
+## What the map stores
+
+The map is host-machine runtime state under `.visor/maps` by default. It is scoped by platform and app id.
+
+It stores:
+
+- schema version
+- app identity
+- screen records and screen variants
+- source-derived labels, selectors, and normalized fingerprints
+- navigation edges and destination contracts
+- confidence, candidate, stale, and failure evidence
+
+Form values, secure input values, and email-like or payment-like text are redacted before the map is written. Stable labels such as field names and button labels are retained so route planning can still find safe controls.
+
+It does not embed screenshots. Normal screenshot artifacts still work when requested, but screenshots are not stored inside the persistent map.
+
+## Repair behavior
+
+When a cached edge reaches the wrong destination or a target is missing, Visor performs a bounded repair pass. The default repair budget is intentionally small: depth two and roughly thirty seconds.
+
+Repair can:
+
+- retry from fresh UI source
+- demote a stale edge without deleting it after one failure
+- mark a route stale after repeated failures
+- explore only controls classified as safe
+- record repaired paths as candidates
+- promote candidate paths after repeated successful confirmation
+
+Risky controls such as delete, submit, logout, purchase, pay, and send are recorded as UI facts but are not clicked by default during repair. Form fields are observed but not filled unless a scenario explicitly performs a typing action.
+
+## Target rules
+
+Stable selectors such as accessibility ids and element ids have the highest routing confidence. Unique exact visible text targets are eligible for route planning. Ambiguous text targets fail instead of guessing between credible destinations. Coordinate taps are executed as raw coordinates and are excluded from route planning.
+
+Authentication walls are remembered as auth-required states. If the current logged-out state cannot reach a target safely, Visor fails quickly with a clear authentication cause instead of rediscovering the same wall repeatedly.
+
+## Controls
+
+Use `visor discover` to explicitly observe the current screen and update the map.
+
+Use `--no-map` or `VISOR_NO_MAP=true` to disable both map reads and map writes for a command.

@@ -2,10 +2,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
+import {
+  createAppMapContext,
+  createMapSummary,
+  persistAppMapContext,
+  runMappedCommand
+} from './appMap.js';
 import { makeError } from './errors.js';
 import type {
   Assertion,
   AssertionResult,
+  MapExecutionOptions,
   PlatformAdapter,
   RunResult,
   Scenario,
@@ -81,6 +88,21 @@ function signatureSafeDetails(details: Record<string, unknown>): Record<string, 
   if (args && typeof args === 'object' && !Array.isArray(args)) {
     delete (args as Record<string, unknown>).path;
   }
+  const map = safe.map;
+  if (map && typeof map === 'object' && !Array.isArray(map)) {
+    const mapDetails = map as Record<string, unknown>;
+    const route = Array.isArray(mapDetails.route)
+      ? mapDetails.route
+          .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step))
+          .map((step) => ({
+            command: step.command,
+            target: step.target
+          }))
+      : [];
+    safe.map = {
+      route
+    };
+  }
   return safe;
 }
 
@@ -90,7 +112,8 @@ export async function runScenario(
   device = 'local',
   timeoutMs?: number,
   artifactBaseDir?: string,
-  closeAdapter = true
+  closeAdapter = true,
+  mapOptions?: MapExecutionOptions
 ): Promise<RunResult> {
   const started_at = utcNowIso();
   const run_id = makeId('run');
@@ -98,6 +121,8 @@ export async function runScenario(
   const stepResults: StepResult[] = [];
   const artifacts: string[] = [];
   let topError: RunResult['error'];
+  const mapContext = createAppMapContext(adapter, mapOptions);
+  const disabledMapSummary = mapContext ? undefined : createMapSummary(adapter, mapOptions);
 
   let screenshotDir: string | undefined;
   let sourceDir: string | undefined;
@@ -123,7 +148,9 @@ export async function runScenario(
           stepArgs.path = path.join(sourceDir, `${label}.xml`);
         }
 
-        const details = await runStep(adapter, step.command, stepArgs);
+        const details = mapContext
+          ? await runMappedCommand(mapContext, step.command, stepArgs)
+          : await runStep(adapter, step.command, stepArgs);
         const durationMs = Math.round(performance.now() - started);
         const result: StepResult = {
           id: step.id,
@@ -201,6 +228,7 @@ export async function runScenario(
 
     const allPass = stepsOk && assertionEvaluation.ok;
     const ended_at = utcNowIso();
+    const mapSummary = persistAppMapContext(mapContext) ?? disabledMapSummary;
     const signatureInput = {
       platform,
       steps: stepResults.map((step) => ({
@@ -224,9 +252,11 @@ export async function runScenario(
       artifacts,
       determinism_signature: signatureFor(signatureInput),
       seed: typeof scenario.config.seed === 'number' ? scenario.config.seed : undefined,
+      map: mapSummary,
       error: topError
     };
   } finally {
+    persistAppMapContext(mapContext);
     if (closeAdapter) {
       await adapter.close();
     }

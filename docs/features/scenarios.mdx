@@ -112,6 +112,8 @@ Important behavior:
 - a failed step does not stop later steps from running
 - timeout overruns convert a step into a failure even if the action itself returned data
 - screenshot and source steps add artifacts to the run record
+- mapped execution is enabled by default and may perform hidden route or repair actions before a target step
+- hidden map actions are reported in `run.map` and `steps[].details.map`; the requested scenario step list is not rewritten
 
 ## Assertion phase
 
@@ -136,6 +138,7 @@ A scenario run produces:
 - assertion results
 - collected artifact paths
 - a determinism signature
+- app-map metadata when mapped execution was enabled or disabled
 - an optional run-level error payload
 
 ## Benchmark relationship
