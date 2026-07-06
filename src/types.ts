@@ -18,6 +18,8 @@ export type CommandName =
   | 'wait'
   | 'source';
 
+export type CliCommandName = CommandName | 'discover';
+
 export interface ErrorPayload {
   code: ErrorCode;
   message: string;
@@ -71,6 +73,31 @@ export interface StepResult {
   error?: ErrorPayload;
 }
 
+export interface MapRouteStep {
+  command: CommandName;
+  target?: string;
+  confidence: number;
+}
+
+export interface MapExecutionSummary {
+  enabled: boolean;
+  used: boolean;
+  updated: boolean;
+  repaired: boolean;
+  repairs: number;
+  schema_version?: number;
+  path?: string;
+  identity?: string;
+}
+
+export interface MapExecutionOptions {
+  enabled?: boolean;
+  rootDir?: string;
+  appId?: string;
+  repairDepth?: number;
+  repairTimeoutMs?: number;
+}
+
 export interface AssertionResult {
   id: string;
   type: string;
@@ -91,6 +118,7 @@ export interface RunResult {
   artifacts: string[];
   determinism_signature: string;
   seed?: number;
+  map?: MapExecutionSummary;
   error?: ErrorPayload;
 }
 

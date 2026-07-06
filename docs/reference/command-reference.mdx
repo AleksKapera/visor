@@ -20,6 +20,7 @@ These inputs are accepted globally and, where relevant, by individual commands.
 | `server-url` | Appium server URL |
 | `app-id` | Android app package or iOS bundle identifier; on iOS it must match an installed app on the selected target |
 | `attach` | Attach to an already running app process when possible |
+| `no-map` | Disable app-map reads and writes for this command |
 
 Important notes:
 
@@ -27,6 +28,14 @@ Important notes:
 - `visor --help`, `visor -h`, and no-command invocation print plain-text usage instead of JSON
 - `visor --version` and `visor -v` print the package version instead of JSON
 - `platform` is inferred from the selected device; `--platform` is not accepted
+
+## Mapped execution
+
+Mapped execution is enabled by default for direct action commands and scenario runs. Visor observes lightweight UI source around target actions, stores a schema-versioned host-machine app map under `.visor/maps`, and can reuse confirmed navigation edges when a later command targets a known screen from a different current screen.
+
+Use `--no-map` or `VISOR_NO_MAP=true` when you need raw Appium behavior. No-map mode disables both map reads and map writes.
+
+Every mapped direct action returns `data.map`. Scenario runs return `data.run.map` and per-step map details under `data.run.steps[].details.map` when a step used routing, repair, or map observation.
 
 ## Direct action commands
 
@@ -163,6 +172,24 @@ Returns action payload fields:
 
 For direct action commands, run `visor start` first.
 
+### `discover`
+
+Purpose: observe the current screen and update the shared app map without running a scenario action.
+
+Optional runtime inputs:
+
+- `device`
+- `server-url`
+- `app-id`
+- `attach`
+- `no-map`
+
+Response data fields:
+
+- `action`
+- `map`
+- `screen`
+
 ## Scenario commands
 
 ### `validate`
@@ -201,6 +228,7 @@ Optional runtime inputs:
 - `app-id`
 - `attach`
 - `runtime`, with values `appium` or `local`
+- `no-map`
 
 Response data fields:
 
@@ -212,6 +240,8 @@ The `run` object contains the full run result, including step results, assertion
 For Appium-backed scenario runs, run `visor start` first.
 
 For deterministic local development checks, pass `--runtime local`. This runs the scenario against Visor's local fixture runtime, writes normal reports and artifacts, and does not require Appium, a daemon, an emulator, a simulator, or a real app.
+
+When mapped execution is enabled, the run also includes map metadata and any hidden route or repair decisions in step details.
 
 ### `benchmark`
 

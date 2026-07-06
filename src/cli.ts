@@ -2,9 +2,11 @@ import fs from 'node:fs';
 
 import { DEFAULT_SERVER_URL } from './adapters.js';
 import {
+  DaemonOperationError,
   DaemonRequestTimeoutError,
   DaemonUnavailableError,
   runDaemonAction,
+  runDaemonDiscover,
   runDaemonScenario,
   startVisorDaemon,
   statusVisorDaemon,
@@ -19,6 +21,7 @@ import type {
   CommandName,
   CommandResponse,
   ErrorCode,
+  MapExecutionOptions,
   Platform,
   Scenario,
   ValidationIssue
@@ -48,6 +51,7 @@ interface RuntimeOptions {
   server_url: string;
   app_id?: string;
   attach_to_running: boolean;
+  map: MapExecutionOptions;
 }
 
 interface LocalRuntimeOptions {
@@ -91,6 +95,7 @@ const ALL_COMMANDS = new Set<string>([
   ...ACTION_COMMANDS,
   'validate',
   'run',
+  'discover',
   'benchmark',
   'report',
   'start',
@@ -107,6 +112,7 @@ const GLOBAL_SPEC: Record<string, OptionType> = {
   'server-url': 'string',
   'app-id': 'string',
   attach: 'boolean',
+  'no-map': 'boolean',
   verbose: 'boolean'
 };
 
@@ -136,7 +142,17 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     runtime: 'string',
     'server-url': 'string',
     'app-id': 'string',
-    attach: 'boolean'
+    attach: 'boolean',
+    'no-map': 'boolean'
+  },
+  discover: {
+    device: 'string',
+    timeout: 'number',
+    format: 'string',
+    'server-url': 'string',
+    'app-id': 'string',
+    attach: 'boolean',
+    'no-map': 'boolean'
   },
   benchmark: {
     runs: 'number',
@@ -147,7 +163,8 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     format: 'string',
     'server-url': 'string',
     'app-id': 'string',
-    attach: 'boolean'
+    attach: 'boolean',
+    'no-map': 'boolean'
   },
   report: { format: 'string' },
   start: {
@@ -186,6 +203,7 @@ function helpText(): string {
     '  validate <scenario>',
     '  run <scenario> [--output <dir>] [--runtime appium|local]',
     '  benchmark <scenario> [--runs <n>] [--threshold <percent>]',
+    '  discover [--app-id <id>]',
     '  report [path]',
     '  start [--server-url <url>] [--appium-cmd <cmd>]',
     '  status [--server-url <url>]',
@@ -197,6 +215,8 @@ function helpText(): string {
     '  visor run path/to/scenario.json --runtime local --output artifacts-local',
     '  visor start --server-url http://127.0.0.1:4723',
     '  visor run scenarios/checkout-smoke.json --output artifacts-test',
+    '  visor run scenarios/checkout-smoke.json --no-map',
+    '  visor discover --app-id com.example.app',
     '  visor scroll --device emulator-5554 --direction down',
     '  visor status'
   ].join('\n');
@@ -314,7 +334,10 @@ async function resolvedRuntime(options: ParsedOptions): Promise<RuntimeOptions> 
     output_dir: String(options.output ?? 'artifacts'),
     server_url: String(options['server-url'] ?? DEFAULT_SERVER_URL),
     app_id: typeof options['app-id'] === 'string' ? options['app-id'] : undefined,
-    attach_to_running: Boolean(options.attach)
+    attach_to_running: Boolean(options.attach),
+    map: {
+      enabled: !Boolean(options['no-map'])
+    }
   };
 }
 
@@ -329,7 +352,8 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
     'seed',
     'runtime',
     'app-id',
-    'attach'
+    'attach',
+    'no-map'
   ]);
   const args = Object.entries(options).reduce<Record<string, unknown>>((acc, [key, value]) => {
     if (!commonIgnored.has(key) && value !== undefined) {
@@ -567,7 +591,11 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
       scenario,
       runtime.device,
       runtime.timeout,
-      runtime.output_dir
+      runtime.output_dir,
+      {
+        ...runtime.map,
+        appId: runtime.app_id
+      }
     );
     const outputs = writeReports(result, runtime.output_dir);
 
@@ -612,6 +640,68 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
         : isDaemonTimeout
           ? 'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
           : 'Verify the target emulator/simulator and Appium driver setup, then retry.'
+    );
+    return { code: 1, response };
+  }
+}
+
+export async function cmdDiscover(parsed: ParsedCommand): Promise<CommandResult> {
+  const commandId = makeId('cmd');
+  const startedAt = utcNowIso();
+  let runtime: RuntimeOptions;
+  try {
+    runtime = await resolvedRuntime(parsed.options);
+  } catch (error) {
+    if (!(error instanceof DeviceSelectionError)) {
+      throw error;
+    }
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'TARGET_ERROR',
+      'Device selection failed',
+      error.message,
+      'Start one target device or rerun with --device <device-id>'
+    );
+    response.data = { devices: error.devices };
+    return { code: 1, response };
+  }
+
+  try {
+    const result = await runDaemonDiscover(
+      {
+        platform: runtime.platform,
+        server_url: runtime.server_url,
+        device: runtime.device,
+        app_id: runtime.app_id,
+        attach_to_running: runtime.attach_to_running
+      },
+      {
+        ...runtime.map,
+        appId: runtime.app_id
+      }
+    );
+    const response = envelopeOk(commandId, startedAt, [], 'run');
+    response.data = result;
+    return { code: 0, response };
+  } catch (error) {
+    const isDaemonUnavailable = error instanceof DaemonUnavailableError;
+    const isDaemonTimeout = error instanceof DaemonRequestTimeoutError;
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      isDaemonUnavailable || isDaemonTimeout ? 'TARGET_ERROR' : 'ACTION_ERROR',
+      isDaemonUnavailable
+        ? 'discover requires visor start'
+        : isDaemonTimeout
+          ? 'discover timed out waiting for Visor daemon'
+          : 'discover failed',
+      errorMessage(error),
+      isDaemonUnavailable
+        ? 'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
+        : isDaemonTimeout
+          ? 'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
+          : 'Check target app state and retry'
     );
     return { code: 1, response };
   }
@@ -684,7 +774,11 @@ export async function cmdBenchmark(parsed: ParsedCommand): Promise<CommandResult
         scenario,
         runtime.device,
         runtime.timeout,
-        runtime.output_dir
+        runtime.output_dir,
+        {
+          ...runtime.map,
+          appId: runtime.app_id
+        }
       );
       writeReports(result, runtime.output_dir);
       signatures.push(result.determinism_signature);
@@ -784,7 +878,11 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
         attach_to_running: options.attach_to_running
       },
       command,
-      actionArgs(command, parsed.options)
+      actionArgs(command, parsed.options),
+      {
+        ...options.map,
+        appId: options.app_id
+      }
     );
     const actionPayload = payload.args;
     if (actionPayload && typeof actionPayload === 'object' && !Array.isArray(actionPayload)) {
@@ -794,6 +892,9 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
       }
     }
   } catch (error) {
+    if (error instanceof DaemonOperationError && error.data) {
+      payload = error.data;
+    }
     actionError = error;
   }
 
@@ -916,6 +1017,9 @@ export async function executeCommand(argv: string[]): Promise<CommandResult> {
   }
   if (parsed.command === 'run') {
     return cmdRun(parsed);
+  }
+  if (parsed.command === 'discover') {
+    return cmdDiscover(parsed);
   }
   if (parsed.command === 'benchmark') {
     return cmdBenchmark(parsed);

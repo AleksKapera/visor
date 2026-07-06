@@ -6,13 +6,27 @@ import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_SERVER_URL, getAdapter } from './adapters.js';
 import {
+  createAppMapContext,
+  createMapSummary,
+  discoverAppMap,
+  persistAppMapContext,
+  runMappedCommand
+} from './appMap.js';
+import {
   DEFAULT_STARTUP_TIMEOUT_SECONDS,
   startManagedAppium,
   statusManagedAppium,
   stopManagedAppium
 } from './appiumLifecycle.js';
 import { runScenario } from './runner.js';
-import type { CommandName, Platform, PlatformAdapter, RunResult, Scenario } from './types.js';
+import type {
+  CommandName,
+  MapExecutionOptions,
+  Platform,
+  PlatformAdapter,
+  RunResult,
+  Scenario
+} from './types.js';
 import { ensureDir, errorMessage, resolveExecutable, sleep } from './utils.js';
 
 interface RuntimeKeyInput {
@@ -34,7 +48,14 @@ interface DaemonMetadata {
 type DaemonRequest =
   | { type: 'status' }
   | { type: 'stop'; force?: boolean }
-  | { type: 'action'; runtime: RuntimeKeyInput; command: CommandName; args: Record<string, unknown> }
+  | { type: 'discover'; runtime: RuntimeKeyInput; mapOptions?: MapExecutionOptions }
+  | {
+      type: 'action';
+      runtime: RuntimeKeyInput;
+      command: CommandName;
+      args: Record<string, unknown>;
+      mapOptions?: MapExecutionOptions;
+    }
   | {
       type: 'scenario';
       runtime: RuntimeKeyInput;
@@ -42,11 +63,12 @@ type DaemonRequest =
       device: string;
       timeout?: number;
       outputDir: string;
+      mapOptions?: MapExecutionOptions;
     };
 
 type DaemonResponse =
   | { ok: true; data: Record<string, unknown> | RunResult }
-  | { ok: false; error: string };
+  | { ok: false; error: string; data?: Record<string, unknown> };
 
 interface DaemonOptions {
   serverUrl: string;
@@ -72,6 +94,26 @@ export class DaemonRequestTimeoutError extends Error {
       `Timed out after ${timeoutMs}ms waiting for the Visor daemon to finish '${requestType}'. Inspect .visor/daemon/daemon.log and .visor/appium/*.log for the underlying Appium operation.`
     );
     this.name = 'DaemonRequestTimeoutError';
+  }
+}
+
+export class DaemonOperationError extends Error {
+  readonly data?: Record<string, unknown>;
+
+  constructor(message: string, data?: Record<string, unknown>) {
+    super(message);
+    this.name = 'DaemonOperationError';
+    this.data = data;
+  }
+}
+
+class DaemonResponseError extends Error {
+  readonly data?: Record<string, unknown>;
+
+  constructor(message: string, data?: Record<string, unknown>) {
+    super(message);
+    this.name = 'DaemonResponseError';
+    this.data = data;
   }
 }
 
@@ -212,7 +254,7 @@ async function requestDaemon(request: DaemonRequest, timeoutMs = 1000): Promise<
 async function daemonRequestData<T>(request: DaemonRequest, timeoutMs = 1000): Promise<T> {
   const response = await requestDaemon(request, timeoutMs);
   if (!response.ok) {
-    throw new Error(response.error);
+    throw new DaemonOperationError(response.error, response.data);
   }
 
   return response.data as T;
@@ -457,9 +499,13 @@ export async function stopVisorDaemon(
 export async function runDaemonAction(
   runtime: RuntimeKeyInput,
   command: CommandName,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  mapOptions?: MapExecutionOptions
 ): Promise<Record<string, unknown>> {
-  return daemonRequestData<Record<string, unknown>>({ type: 'action', runtime, command, args }, 300000);
+  return daemonRequestData<Record<string, unknown>>(
+    { type: 'action', runtime, command, args, mapOptions },
+    300000
+  );
 }
 
 export async function runDaemonScenario(
@@ -467,11 +513,22 @@ export async function runDaemonScenario(
   scenario: Scenario,
   device: string,
   timeout: number | undefined,
-  outputDir: string
+  outputDir: string,
+  mapOptions?: MapExecutionOptions
 ): Promise<RunResult> {
   return daemonRequestData<RunResult>(
-    { type: 'scenario', runtime, scenario, device, timeout, outputDir },
+    { type: 'scenario', runtime, scenario, device, timeout, outputDir, mapOptions },
     600000
+  );
+}
+
+export async function runDaemonDiscover(
+  runtime: RuntimeKeyInput,
+  mapOptions?: MapExecutionOptions
+): Promise<Record<string, unknown>> {
+  return daemonRequestData<Record<string, unknown>>(
+    { type: 'discover', runtime, mapOptions },
+    300000
   );
 }
 
@@ -537,11 +594,12 @@ export async function runDaemonFromEnv(): Promise<void> {
   async function runActionWithSessionRetry(
     runtime: RuntimeKeyInput,
     command: CommandName,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    mapOptions?: MapExecutionOptions
   ): Promise<Record<string, unknown>> {
     const adapter = await sessionFor(runtime);
     try {
-      return await adapter[command](args);
+      return await runActionWithMap(adapter, command, args, mapOptions);
     } catch (error) {
       if (!isRecoverableSessionCacheError(error)) {
         throw error;
@@ -549,7 +607,50 @@ export async function runDaemonFromEnv(): Promise<void> {
 
       await discardSession(runtime);
       const freshAdapter = await sessionFor(runtime);
-      return freshAdapter[command](args);
+      return runActionWithMap(freshAdapter, command, args, mapOptions);
+    }
+  }
+
+  async function runActionWithMap(
+    adapter: PlatformAdapter,
+    command: CommandName,
+    args: Record<string, unknown>,
+    mapOptions?: MapExecutionOptions
+  ): Promise<Record<string, unknown>> {
+    const options = mapOptions;
+    const context = createAppMapContext(adapter, options);
+    if (!context) {
+      const summary = createMapSummary(adapter, options);
+      try {
+        const details = await adapter[command](args);
+        return {
+          ...details,
+          map: summary
+        };
+      } catch (error) {
+        throw new DaemonResponseError(errorMessage(error), {
+          map: summary
+        });
+      }
+    }
+
+    try {
+      const details = await runMappedCommand(context, command, args);
+      const stepMap = details.map && typeof details.map === 'object' ? details.map : {};
+      const summary = persistAppMapContext(context);
+      return {
+        ...details,
+        map: {
+          ...summary,
+          ...stepMap
+        }
+      };
+    } catch (error) {
+      throw new DaemonResponseError(errorMessage(error), {
+        map: persistAppMapContext(context)
+      });
+    } finally {
+      persistAppMapContext(context);
     }
   }
 
@@ -607,6 +708,17 @@ export async function runDaemonFromEnv(): Promise<void> {
               });
             });
             return;
+          } else if (request.type === 'discover') {
+            const data = await enqueue(async () => {
+              activeOperation = `discover:${runtimeKey(request.runtime)}`;
+              try {
+                const adapter = await sessionFor(request.runtime);
+                return await discoverAppMap(adapter, request.mapOptions);
+              } finally {
+                activeOperation = null;
+              }
+            });
+            response = { ok: true, data };
           } else if (request.type === 'action') {
             const data = await enqueue(async () => {
               activeOperation = `${request.command}:${runtimeKey(request.runtime)}`;
@@ -614,7 +726,8 @@ export async function runDaemonFromEnv(): Promise<void> {
                 return await runActionWithSessionRetry(
                   request.runtime,
                   request.command,
-                  request.args
+                  request.args,
+                  request.mapOptions
                 );
               } finally {
                 activeOperation = null;
@@ -632,7 +745,8 @@ export async function runDaemonFromEnv(): Promise<void> {
                   request.device,
                   request.timeout,
                   request.outputDir,
-                  false
+                  false,
+                  request.mapOptions
                 );
               } finally {
                 activeOperation = null;
@@ -641,7 +755,11 @@ export async function runDaemonFromEnv(): Promise<void> {
             response = { ok: true, data };
           }
         } catch (error) {
-          response = { ok: false, error: errorMessage(error) };
+          response = {
+            ok: false,
+            error: errorMessage(error),
+            data: error instanceof DaemonResponseError ? error.data : undefined
+          };
         }
 
         socket.end(`${JSON.stringify(response)}\n`);
