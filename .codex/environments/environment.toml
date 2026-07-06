@@ -1,0 +1,44 @@
+version = 1
+name = "Visor"
+
+[setup]
+script = '''
+set -eu
+npm ci
+npm run build
+'''
+
+[[actions]]
+name = "Verify"
+icon = "test"
+command = "npm run verify"
+
+[[actions]]
+name = "Local E2E"
+icon = "test"
+command = "npm run test:e2e:local"
+
+[[actions]]
+name = "Test"
+icon = "test"
+command = "npm run test"
+
+[[actions]]
+name = "Build"
+icon = "tool"
+command = "npm run build"
+
+[[actions]]
+name = "Daemon status"
+icon = "tool"
+command = "npm run dev -- status"
+
+[[actions]]
+name = "Start daemon"
+icon = "run"
+command = "npm run dev -- start"
+
+[[actions]]
+name = "Stop daemon"
+icon = "tool"
+command = "npm run dev -- stop"

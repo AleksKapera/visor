@@ -1,33 +1,28 @@
-> **First-time setup**: Customize this file for your project. Prompt the user to customize this file for their project.
-> For Mintlify product knowledge (components, configuration, writing standards),
-> install the Mintlify skill: `npx skills add https://mintlify.com/docs`
+# Documentation instructions
 
-# Documentation project instructions
+These docs are the Mintlify site for Visor, a TypeScript CLI for mobile app verification through Appium.
 
-## About this project
+## Local docs workflow
 
-- This is a documentation site built on [Mintlify](https://mintlify.com)
-- Pages are MDX files with YAML frontmatter
-- Configuration lives in `docs.json`
-- Run `mint dev` to preview locally
-- Run `mint broken-links` to check links
+- Edit MDX pages in this `docs/` directory.
+- Keep YAML frontmatter on public pages.
+- Update `docs.json` when adding, moving, or removing pages.
+- Preview from this directory with `mint dev`.
+- Check links from this directory with `mint broken-links` when navigation or links change.
 
-## Terminology
+## Visor terminology
 
-{/* Add product-specific terms and preferred usage */}
-{/* Example: Use "workspace" not "project", "member" not "user" */}
+- Use `Visor` for the product and `visor` for the CLI command.
+- Use `scenario` for JSON verification flows.
+- Use `run` for one scenario execution and `benchmark` for repeated runs.
+- Use `artifact` for screenshots, UI source dumps, summaries, JUnit output, timeline logs, and HTML reports written to disk.
+- Use `Appium`, `WebDriverIO`, `UiAutomator2`, and `XCUITest` with those spellings.
 
-## Style preferences
+## Content rules
 
-{/* Add any project-specific style rules below */}
-
-- Use active voice and second person ("you")
-- Keep sentences concise — one idea per sentence
-- Use sentence case for headings
-- Bold for UI elements: Click **Settings**
-- Code formatting for file names, commands, paths, and code references
-
-## Content boundaries
-
-{/* Define what should and shouldn't be documented */}
-{/* Example: Don't document internal admin features */}
+- Document current CLI behavior only. Check `../src/cli.ts`, `../src/types.ts`, `../src/validator.ts`, and relevant tests before changing command, schema, response, or runtime docs.
+- Keep public docs focused on real mobile verification through Appium. Do not document internal fake runtimes or test harnesses unless they become supported user workflows.
+- When discussing reports, keep the standard files aligned with implementation: `summary.txt`, `summary.json`, `junit.xml`, `timeline.log`, `report.html`, `screenshots/`, and `sources/`.
+- Prefer short task-oriented sections with concrete commands and examples.
+- Use active voice and address the reader as `you`.
+- Format commands, paths, fields, file names, selectors, and environment variables as code.

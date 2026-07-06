@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "name": "local-fake-smoke",
+    "version": "1",
+    "tags": ["smoke", "local-runtime"]
+  },
+  "config": {
+    "timeoutMs": 15000,
+    "seed": 42,
+    "artifactsDir": "./artifacts"
+  },
+  "steps": [
+    { "id": "s1", "command": "navigate", "args": { "to": "app://counter" } },
+    { "id": "s2", "command": "screenshot", "args": { "label": "counter-initial" } },
+    { "id": "s3", "command": "tap", "args": { "target": "Increment" } },
+    { "id": "s4", "command": "source", "args": { "label": "counter-after-tap" } }
+  ],
+  "assertions": [
+    { "id": "a1", "type": "visible", "target": "text=1" }
+  ],
+  "output": {
+    "report": ["summary", "json", "junit", "html"]
+  }
+}

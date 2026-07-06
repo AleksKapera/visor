@@ -55,7 +55,9 @@ async function withDetectedDevice<T>(work: () => Promise<T>): Promise<T> {
 describe('typescript cli', () => {
   it('returns help for --help', async () => {
     const result = await executeCommand(['--help']);
-    const data = responseData<{ usageText: string; commands: string[] }>(result.response.data);
+    const data = responseData<{ usageText: string; commands: string[]; examples: string[] }>(
+      result.response.data
+    );
     expect(result.code).toBe(0);
     expect(result.response.status).toBe('ok');
     expect(data.usageText).toContain('Visor TypeScript CLI');
@@ -63,6 +65,13 @@ describe('typescript cli', () => {
     expect(data.usageText).toContain('visor --help | -h');
     expect(data.usageText).toContain('visor --version | -v');
     expect(data.usageText).not.toContain('node dist/main.js status');
+    expect(data.usageText).not.toContain('scenarios/local-fake-smoke.json');
+    expect(data.examples).toContain(
+      'visor run path/to/scenario.json --runtime local --output artifacts-local'
+    );
+    expect(data.examples).not.toContain(
+      'visor run scenarios/local-fake-smoke.json --runtime local --output artifacts-local-e2e'
+    );
     expect(data.commands).toContain('run');
     expect(data.commands).toContain('scroll');
   });
@@ -139,6 +148,67 @@ describe('typescript cli', () => {
     expect(result.response.status).toBe('fail');
     expect(result.response.error?.code).toBe('TARGET_ERROR');
     expect(result.response.error?.next_step).toContain('visor start');
+  });
+
+  it('runs a scenario with the deterministic local runtime and writes review artifacts', async () => {
+    const outputDir = tempOutputDir();
+
+    try {
+      const result = await executeCommand([
+        'run',
+        'scenarios/local-fake-smoke.json',
+        '--runtime',
+        'local',
+        '--output',
+        outputDir
+      ]);
+
+      const data = responseData<{
+        run: {
+          run_id: string;
+          status: string;
+          device: string;
+          assertions: Array<{ id: string; status: string }>;
+          artifacts: string[];
+        };
+      }>(result.response.data);
+      const runRoot = path.join(outputDir, data.run.run_id);
+
+      expect(result.code).toBe(0);
+      expect(result.response.status).toBe('ok');
+      expect(data.run.status).toBe('ok');
+      expect(data.run.device).toBe('local');
+      expect(data.run.assertions).toContainEqual(expect.objectContaining({ id: 'a1', status: 'passed' }));
+      expect(result.response.artifacts).toEqual(
+        expect.arrayContaining([
+          path.join(runRoot, 'summary.txt'),
+          path.join(runRoot, 'summary.json'),
+          path.join(runRoot, 'junit.xml'),
+          path.join(runRoot, 'timeline.log'),
+          path.join(runRoot, 'report.html')
+        ])
+      );
+      expect(data.run.artifacts.some((artifact) => artifact.endsWith('001-counter-initial.png'))).toBe(true);
+      expect(data.run.artifacts.some((artifact) => artifact.endsWith('002-counter-after-tap.xml'))).toBe(true);
+      expect(fs.existsSync(path.join(runRoot, 'screenshots', '001-counter-initial.png'))).toBe(true);
+      expect(fs.existsSync(path.join(runRoot, 'sources', '002-counter-after-tap.xml'))).toBe(true);
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unsupported runtime values before device discovery', async () => {
+    const result = await executeCommand([
+      'run',
+      'scenarios/local-fake-smoke.json',
+      '--runtime',
+      'remote'
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.response.status).toBe('fail');
+    expect(result.response.error?.code).toBe('INPUT_ERROR');
+    expect(result.response.error?.message).toBe('Unsupported runtime');
   });
 
   it('requires visor start for benchmark runs', async () => {
