@@ -12,8 +12,9 @@ import {
 } from './daemon.js';
 import { DeviceSelectionError, resolveRunningDevice } from './devices.js';
 import { makeError } from './errors.js';
+import { LocalRuntimeAdapter } from './localRuntime.js';
 import { writeReports } from './report.js';
-import { determinismCheck } from './runner.js';
+import { determinismCheck, runScenario } from './runner.js';
 import type {
   CommandName,
   CommandResponse,
@@ -47,6 +48,12 @@ interface RuntimeOptions {
   server_url: string;
   app_id?: string;
   attach_to_running: boolean;
+}
+
+interface LocalRuntimeOptions {
+  device: string;
+  timeout?: number;
+  output_dir: string;
 }
 
 interface HelpData {
@@ -126,6 +133,7 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     timeout: 'number',
     output: 'string',
     format: 'string',
+    runtime: 'string',
     'server-url': 'string',
     'app-id': 'string',
     attach: 'boolean'
@@ -176,7 +184,7 @@ function helpText(): string {
     '',
     'Commands:',
     '  validate <scenario>',
-    '  run <scenario> [--output <dir>]',
+    '  run <scenario> [--output <dir>] [--runtime appium|local]',
     '  benchmark <scenario> [--runs <n>] [--threshold <percent>]',
     '  report [path]',
     '  start [--server-url <url>] [--appium-cmd <cmd>]',
@@ -186,6 +194,7 @@ function helpText(): string {
     '',
     'Examples:',
     '  visor validate scenarios/checkout-smoke.json',
+    '  visor run path/to/scenario.json --runtime local --output artifacts-local',
     '  visor start --server-url http://127.0.0.1:4723',
     '  visor run scenarios/checkout-smoke.json --output artifacts-test',
     '  visor scroll --device emulator-5554 --direction down',
@@ -318,6 +327,7 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
     'verbose',
     'server-url',
     'seed',
+    'runtime',
     'app-id',
     'attach'
   ]);
@@ -333,6 +343,18 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
   }
 
   return args;
+}
+
+function unsupportedRuntimeResult(commandId: string, startedAt: string, runtime: unknown): CommandResult {
+  const response = envelopeFail(
+    commandId,
+    startedAt,
+    'INPUT_ERROR',
+    'Unsupported runtime',
+    `Unsupported runtime '${String(runtime)}'`,
+    'Use --runtime appium or --runtime local'
+  );
+  return { code: 1, response };
 }
 
 function isTargetInitializationError(error: unknown): boolean {
@@ -370,6 +392,7 @@ function cmdHelp(): CommandResult {
     commands: Array.from(ALL_COMMANDS),
     examples: [
       'visor validate scenarios/checkout-smoke.json',
+      'visor run path/to/scenario.json --runtime local --output artifacts-local',
       'visor start --server-url http://127.0.0.1:4723',
       'visor run scenarios/checkout-smoke.json --output artifacts-test',
       'visor scroll --device emulator-5554 --direction down',
@@ -424,6 +447,39 @@ export async function cmdValidate(parsed: ParsedCommand): Promise<CommandResult>
   }
 }
 
+async function cmdRunLocal(
+  commandId: string,
+  startedAt: string,
+  scenario: Scenario,
+  warnings: ValidationIssue[],
+  runtime: LocalRuntimeOptions
+): Promise<CommandResult> {
+  const result = await runScenario(
+    scenario,
+    new LocalRuntimeAdapter(),
+    runtime.device,
+    runtime.timeout,
+    runtime.output_dir
+  );
+  const outputs = writeReports(result, runtime.output_dir);
+  const response = result.status === 'ok'
+    ? envelopeOk(commandId, startedAt, Object.values(outputs), 'report')
+    : envelopeFail(
+        commandId,
+        startedAt,
+        result.error?.code ?? 'ACTION_ERROR',
+        result.error?.message ?? 'Local runtime scenario failed',
+        result.error?.likely_cause ?? 'The deterministic local runtime did not satisfy the scenario',
+        result.error?.next_step ?? 'Inspect local runtime scenario artifacts and retry'
+      );
+  response.artifacts = Object.values(outputs);
+  response.data = {
+    run: result,
+    warnings
+  };
+  return { code: result.status === 'ok' ? 0 : 2, response };
+}
+
 export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
   const commandId = makeId('cmd');
   const startedAt = utcNowIso();
@@ -441,6 +497,32 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
     );
     response.data = { issues };
     return { code: 1, response };
+  }
+
+  if (
+    parsed.options.runtime !== undefined &&
+    parsed.options.runtime !== 'appium' &&
+    parsed.options.runtime !== 'local'
+  ) {
+    return unsupportedRuntimeResult(commandId, startedAt, parsed.options.runtime);
+  }
+
+  if (parsed.options.runtime === 'local') {
+    const runtime: LocalRuntimeOptions = {
+      device: 'local',
+      timeout:
+        typeof parsed.options.timeout === 'number'
+          ? parsed.options.timeout
+          : typeof scenario.config.timeoutMs === 'number'
+            ? scenario.config.timeoutMs
+            : undefined,
+      output_dir:
+        String(
+          parsed.options.output ??
+          (typeof scenario.config.artifactsDir === 'string' ? scenario.config.artifactsDir : 'artifacts')
+        )
+    };
+    return cmdRunLocal(commandId, startedAt, scenario, warningIssues(issues), runtime);
   }
 
   let runtime: RuntimeOptions;

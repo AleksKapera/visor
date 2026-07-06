@@ -200,6 +200,7 @@ Optional runtime inputs:
 - `server-url`
 - `app-id`
 - `attach`
+- `runtime`, with values `appium` or `local`
 
 Response data fields:
 
@@ -208,7 +209,9 @@ Response data fields:
 
 The `run` object contains the full run result, including step results, assertion results, artifacts, determinism signature, and run-level error data.
 
-For scenario runs, run `visor start` first.
+For Appium-backed scenario runs, run `visor start` first.
+
+For deterministic local development checks, pass `--runtime local`. This runs the scenario against Visor's local fixture runtime, writes normal reports and artifacts, and does not require Appium, a daemon, an emulator, a simulator, or a real app.
 
 ### `benchmark`
 
@@ -222,7 +225,12 @@ Optional inputs:
 
 - `runs` with default `20`
 - `threshold` with default `95.0`
-- the same runtime inputs accepted by `run`
+- `device`
+- `timeout`
+- `output`
+- `server-url`
+- `app-id`
+- `attach`
 
 Response data fields:
 
@@ -233,6 +241,8 @@ Response data fields:
 - `failures`
 - `runIds`
 - `warnings`
+
+Benchmark runs are Appium-backed. They do not accept `--runtime local`; use `run` with `--runtime local` for deterministic local harness checks.
 
 For benchmark runs, run `visor start` first.
 

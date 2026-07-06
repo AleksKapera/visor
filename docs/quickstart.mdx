@@ -97,6 +97,22 @@ This verifies that your installation works and that visor can parse the scenario
 
 The `output.report` field in the example is accepted by the schema, but the current report writer always emits the standard report set regardless of that list.
 
+## Run the local development E2E harness
+
+From a source checkout, you can run a deterministic scenario without a mobile device:
+
+```bash
+npm run verify
+```
+
+For only the local E2E layer, run:
+
+```bash
+npm run test:e2e:local
+```
+
+This uses `visor run scenarios/local-fake-smoke.json --runtime local` under the hood. It writes normal run reports and checks that expected report files, screenshots, and UI source artifacts exist.
+
 ## Run your first scenario
 
 Once validation passes, start the runtime daemon:
