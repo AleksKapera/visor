@@ -100,6 +100,18 @@ describe('typescript cli', () => {
     expect(data.usageText).toContain('Usage:');
   });
 
+  it('returns command-specific help for tap --help', async () => {
+    const result = await executeCommand(['tap', '--help']);
+    const data = responseData<{ usageText: string; examples: string[] }>(result.response.data);
+    expect(result.code).toBe(0);
+    expect(data.usageText).toContain('visor tap --target <selector>');
+    expect(data.usageText).toContain('visor tap --x <points> --y <points>');
+    expect(data.usageText).toContain('--normalized');
+    expect(data.usageText).not.toContain('validate <scenario>');
+    expect(data.examples).toContain('visor tap --target accessibility=Continue');
+    expect(data.examples).toContain('visor tap --target "first-in-section=Top Starter portfolios"');
+  });
+
   it('validates a good scenario', async () => {
     const result = await executeCommand(['validate', 'scenarios/checkout-smoke.json']);
     expect(result.code).toBe(0);

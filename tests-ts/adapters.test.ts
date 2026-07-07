@@ -38,17 +38,31 @@ describe('adapter selector helpers', () => {
     expect(value).toBe('Increment');
   });
 
-  it('uses xpath for text selectors', () => {
+  it('uses exact xpath matches for text selectors', () => {
     const [by, value] = parseTarget('text=1');
     expect(by).toBe(XPATH);
-    expect(value).toContain("contains(@text, '1')");
-    expect(value).toContain("contains(@content-desc, '1')");
+    expect(value).toContain("@text = '1'");
+    expect(value).toContain("@content-desc = '1'");
+    expect(value).not.toContain('contains(');
+  });
+
+  it('uses contains-style xpath matches for text-contains selectors', () => {
+    const [by, value] = parseTarget('text~=Starter');
+    expect(by).toBe(XPATH);
+    expect(value).toContain("contains(@text, 'Starter')");
+    expect(value).toContain("contains(@content-desc, 'Starter')");
   });
 
   it('supports android uiautomator selectors', () => {
     const [by, value] = parseTarget('uiautomator=new UiSelector().text("OK")');
     expect(by).toBe(ANDROID_UIAUTOMATOR);
     expect(value).toContain('text("OK")');
+  });
+
+  it('keeps selector values after additional equals signs intact', () => {
+    const [by, value] = parseTarget("xpath=//XCUIElementTypeKey[@name='1']");
+    expect(by).toBe(XPATH);
+    expect(value).toBe("//XCUIElementTypeKey[@name='1']");
   });
 
   it('requires complete coordinates for tap mode', () => {
@@ -120,6 +134,28 @@ describe('adapter selector helpers', () => {
     await adapter.tap({ x: 10, y: 20 });
 
     expect(driver.execute).toHaveBeenCalledWith('mobile: tap', { x: 10, y: 20 });
+    await adapter.close();
+  });
+
+  it('taps the center point of target elements on iOS', async () => {
+    const driver = createFakeDriver();
+    const element = {
+      click: vi.fn(),
+      getRect: vi.fn().mockResolvedValue({ x: 40, y: 100, width: 80, height: 30 })
+    };
+    driver.$.mockResolvedValue(element);
+    webdriverMock.remote.mockResolvedValue(driver);
+    const adapter = await RealAppiumAdapter.create(
+      'ios',
+      'http://127.0.0.1:4723',
+      'simulator-udid',
+      'com.example.app'
+    );
+
+    await adapter.tap({ target: 'Starter' });
+
+    expect(driver.execute).toHaveBeenCalledWith('mobile: tap', { x: 80, y: 115 });
+    expect(element.click).not.toHaveBeenCalled();
     await adapter.close();
   });
 

@@ -30,7 +30,9 @@ accessibility=Increment
 | --- | --- | --- |
 | `accessibility=` | Accessibility identifier | Default when no prefix is present |
 | `id=` | Element id | Uses the driver id selector |
-| `text=` | Contains-style text match | Implemented as XPath across multiple common text-like attributes |
+| `text=` | Exact text match | Implemented as XPath equality across multiple common text-like attributes |
+| `text~=` | Contains-style text match | Use when merged or multi-line semantics need substring matching |
+| `first-in-section=` | First tappable item below a section heading | Mapped execution only |
 | `xpath=` | Raw XPath | Most flexible and most fragile |
 | `uiautomator=` | Android UiSelector expression | Android only |
 | `predicate=` | iOS predicate string | iOS only |
@@ -38,9 +40,9 @@ accessibility=Increment
 
 ## How `text=` works
 
-`text=` does not perform an exact single-attribute match.
+`text=` performs an exact match against common text-like attributes.
 
-Instead, visor builds an XPath selector that checks whether the provided value is contained in any of these attributes:
+Visor builds an XPath selector that checks whether the provided value equals any of these attributes:
 
 - `text`
 - `content-desc`
@@ -48,7 +50,19 @@ Instead, visor builds an XPath selector that checks whether the provided value i
 - `name`
 - `value`
 
-This makes `text=` convenient for cross-platform targeting, but it can also match more elements than expected.
+Use `text~=` when you intentionally want substring matching across those same attributes. In mapped execution, broad numeric contains targets such as `text~=$100` are only treated as live/current-screen taps; they are not used to route to an off-screen destination.
+
+## Section-relative mapped targets
+
+Use `first-in-section=` when the request is relative to a visible section rather than a specific label.
+
+Example:
+
+```text
+first-in-section=Top Starter portfolios
+```
+
+With mapped execution enabled, Visor routes to a screen containing that section heading and taps the first safe tappable item below it by source geometry. It skips section headings, `See all` controls, bottom navigation, back controls, static text, images, form fields, and hidden or zero-size elements.
 
 ## Choosing the right selector type
 
@@ -86,6 +100,7 @@ That means these assertion targets are valid:
 - `Increment`
 - `accessibility=Increment`
 - `text=Checkout`
+- `text~=Starter`
 - `id=primary-cta`
 - `xpath=//*[@text='Checkout']`
 - `uiautomator=new UiSelector().text("OK")`
@@ -97,6 +112,7 @@ That means these assertion targets are valid:
 Important tradeoffs in the current selector system:
 
 - plain text defaults to accessibility ids, not visible text
-- `text=` is intentionally broad and may over-match
+- `text~=` is intentionally broad and may over-match
+- `first-in-section=` needs mapped execution and source geometry for the section item
 - XPath is flexible but tends to be the least stable option
 - coordinate taps are sensitive to layout shifts and device differences

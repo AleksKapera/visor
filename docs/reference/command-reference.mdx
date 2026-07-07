@@ -21,6 +21,7 @@ These inputs are accepted globally and, where relevant, by individual commands.
 | `app-id` | Android app package or iOS bundle identifier; on iOS it must match an installed app on the selected target |
 | `attach` | Attach to an already running app process when possible |
 | `no-map` | Disable app-map reads and writes for this command |
+| `repair` | Allow opt-in exploratory app-map repair after a missing or stale route |
 
 Important notes:
 
@@ -34,6 +35,8 @@ Important notes:
 Mapped execution is enabled by default for direct action commands and scenario runs. Visor observes lightweight UI source around target actions, stores a schema-versioned host-machine app map under `.visor/maps`, and can reuse confirmed navigation edges when a later command targets a known screen from a different current screen.
 
 Use `--no-map` or `VISOR_NO_MAP=true` when you need raw Appium behavior. No-map mode disables both map reads and map writes.
+
+Exploratory repair is off by default. Use `--repair` when you want Visor to try safe controls after a missing or stale route instead of failing fast.
 
 Every mapped direct action returns `data.map`. Scenario runs return `data.run.map` and per-step map details under `data.run.steps[].details.map` when a step used routing, repair, or map observation.
 
@@ -59,6 +62,19 @@ Returns action payload fields:
 
 - `target`, or
 - `x`, `y`, and `normalized`
+
+Coordinate `x` and `y` values are screen points by default. With `normalized`, they are fractions of the current screen width and height.
+
+Examples:
+
+```bash
+visor tap --target accessibility=Continue
+visor tap --target text=Deposit
+visor tap --target text~=Starter
+visor tap --target "first-in-section=Top Starter portfolios"
+visor tap --x 120 --y 640
+visor tap --x 0.5 --y 0.92 --normalized
+```
 
 ### `navigate`
 
@@ -183,6 +199,11 @@ Optional runtime inputs:
 - `app-id`
 - `attach`
 - `no-map`
+- `crawl`
+- `crawl-depth`
+- `crawl-limit`
+
+Use `--crawl` to explore safe controls from the current screen and record app-map edges. Crawling is bounded by `--crawl-depth` and `--crawl-limit`.
 
 Response data fields:
 

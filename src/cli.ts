@@ -113,6 +113,7 @@ const GLOBAL_SPEC: Record<string, OptionType> = {
   'app-id': 'string',
   attach: 'boolean',
   'no-map': 'boolean',
+  repair: 'boolean',
   verbose: 'boolean'
 };
 
@@ -143,7 +144,11 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     'server-url': 'string',
     'app-id': 'string',
     attach: 'boolean',
-    'no-map': 'boolean'
+    'no-map': 'boolean',
+    repair: 'boolean',
+    crawl: 'boolean',
+    'crawl-depth': 'number',
+    'crawl-limit': 'number'
   },
   discover: {
     device: 'string',
@@ -152,7 +157,11 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     'server-url': 'string',
     'app-id': 'string',
     attach: 'boolean',
-    'no-map': 'boolean'
+    'no-map': 'boolean',
+    repair: 'boolean',
+    crawl: 'boolean',
+    'crawl-depth': 'number',
+    'crawl-limit': 'number'
   },
   benchmark: {
     runs: 'number',
@@ -164,7 +173,8 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     'server-url': 'string',
     'app-id': 'string',
     attach: 'boolean',
-    'no-map': 'boolean'
+    'no-map': 'boolean',
+    repair: 'boolean'
   },
   report: { format: 'string' },
   start: {
@@ -220,6 +230,71 @@ function helpText(): string {
     '  visor scroll --device emulator-5554 --direction down',
     '  visor status'
   ].join('\n');
+}
+
+function commandHelpText(command: string): { usageText: string; examples: string[] } {
+  if (command === 'tap') {
+    const examples = [
+      'visor tap --target accessibility=Continue',
+      'visor tap --target text=Deposit',
+      'visor tap --target text~=Starter',
+      'visor tap --target "first-in-section=Top Starter portfolios"',
+      'visor tap --x 120 --y 640',
+      'visor tap --x 0.5 --y 0.92 --normalized'
+    ];
+    return {
+      usageText: [
+        'Visor tap',
+        '',
+        'Usage:',
+        '  visor tap --target <selector> [runtime options]',
+        '  visor tap --x <points> --y <points> [--normalized] [runtime options]',
+        '',
+        'Options:',
+        '  --target <selector>       Selector to tap',
+        '  --x <points>              X coordinate in screen points, or fraction with --normalized',
+        '  --y <points>              Y coordinate in screen points, or fraction with --normalized',
+        '  --normalized              Treat x/y as fractions of current screen size',
+        '  --no-map                  Disable app-map reads and writes',
+        '  --repair                  Allow opt-in exploratory app-map repair'
+      ].join('\n'),
+      examples
+    };
+  }
+
+  if (command === 'discover') {
+    const examples = [
+      'visor discover --app-id com.example.app',
+      'visor discover --app-id com.example.app --crawl --crawl-depth 2 --crawl-limit 24'
+    ];
+    return {
+      usageText: [
+        'Visor discover',
+        '',
+        'Usage:',
+        '  visor discover [--app-id <id>] [--crawl] [runtime options]',
+        '',
+        'Options:',
+        '  --crawl                   Explore safe controls and record app-map edges',
+        '  --crawl-depth <n>         Maximum crawl depth, default 2',
+        '  --crawl-limit <n>         Maximum crawl actions, default 24',
+        '  --no-map                  Disable app-map reads and writes'
+      ].join('\n'),
+      examples
+    };
+  }
+
+  return {
+    usageText: [
+      `Visor ${command}`,
+      '',
+      'Usage:',
+      `  visor ${command} [options]`,
+      '',
+      'Run visor --help for the full command list.'
+    ].join('\n'),
+    examples: []
+  };
 }
 
 function envelopeOk(
@@ -336,7 +411,11 @@ async function resolvedRuntime(options: ParsedOptions): Promise<RuntimeOptions> 
     app_id: typeof options['app-id'] === 'string' ? options['app-id'] : undefined,
     attach_to_running: Boolean(options.attach),
     map: {
-      enabled: !Boolean(options['no-map'])
+      enabled: !Boolean(options['no-map']),
+      ...(options.repair === true ? { repair: true } : {}),
+      ...(options.crawl === true ? { crawl: true } : {}),
+      ...(typeof options['crawl-depth'] === 'number' ? { crawlDepth: options['crawl-depth'] } : {}),
+      ...(typeof options['crawl-limit'] === 'number' ? { crawlLimit: options['crawl-limit'] } : {})
     }
   };
 }
@@ -353,7 +432,8 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
     'runtime',
     'app-id',
     'attach',
-    'no-map'
+    'no-map',
+    'repair'
   ]);
   const args = Object.entries(options).reduce<Record<string, unknown>>((acc, [key, value]) => {
     if (!commonIgnored.has(key) && value !== undefined) {
@@ -407,14 +487,15 @@ function targetInitializationNextStep(error: unknown): string {
   return 'Verify Appium driver setup, target device state, and app id, then retry.';
 }
 
-function cmdHelp(): CommandResult {
+function cmdHelp(command?: string): CommandResult {
   const commandId = makeId('cmd');
   const startedAt = utcNowIso();
   const response = envelopeOk(commandId, startedAt, [], 'validate');
+  const commandHelp = command ? commandHelpText(command) : undefined;
   response.data = {
-    usageText: helpText(),
-    commands: Array.from(ALL_COMMANDS),
-    examples: [
+    usageText: commandHelp?.usageText ?? helpText(),
+    commands: command ? [command] : Array.from(ALL_COMMANDS),
+    examples: commandHelp?.examples ?? [
       'visor validate scenarios/checkout-smoke.json',
       'visor run path/to/scenario.json --runtime local --output artifacts-local',
       'visor start --server-url http://127.0.0.1:4723',
@@ -997,11 +1078,14 @@ export async function cmdStop(parsed: ParsedCommand): Promise<CommandResult> {
 }
 
 export async function executeCommand(argv: string[]): Promise<CommandResult> {
+  const requestedHelp = argv[0] === 'help' || argv.includes('--help') || argv.includes('-h');
+  if (requestedHelp) {
+    const helpCommand = argv.find((token) => ALL_COMMANDS.has(token));
+    return cmdHelp(helpCommand);
+  }
+
   if (
-    argv.length === 0 ||
-    argv[0] === 'help' ||
-    argv.includes('--help') ||
-    argv.includes('-h')
+    argv.length === 0
   ) {
     return cmdHelp();
   }

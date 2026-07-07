@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { discoverAppMap } from '../src/appMap.js';
 import { runScenario } from '../src/runner.js';
 import { writeReports } from '../src/report.js';
 import type { AdapterCapability, PlatformAdapter, Scenario } from '../src/types.js';
@@ -10,7 +11,16 @@ class ScreenGraphAdapter implements PlatformAdapter {
   readonly actions: string[] = [];
 
   constructor(
-    private readonly graph: Record<string, { source: string; taps: Record<string, string> }>,
+    private readonly graph: Record<
+      string,
+      {
+        source: string | string[];
+        taps: Record<string, string>;
+        liveTargets?: string[];
+        missingLiveTargets?: string[];
+        coordinateTaps?: Record<string, string>;
+      }
+    >,
     private screen = 'home'
   ) {}
 
@@ -29,6 +39,10 @@ class ScreenGraphAdapter implements PlatformAdapter {
   async tap(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (typeof args.x === 'number' && typeof args.y === 'number') {
       this.actions.push(`tap:${args.x},${args.y}`);
+      const next = this.graph[this.screen]?.coordinateTaps?.[`${args.x},${args.y}`];
+      if (next) {
+        this.screen = next;
+      }
       return { action: 'tap', args: { x: args.x, y: args.y } };
     }
 
@@ -74,7 +88,11 @@ class ScreenGraphAdapter implements PlatformAdapter {
     this.actions.push(`source:${this.screen}`);
     const filePath = path.resolve(String(args.path ?? path.join(os.tmpdir(), `${this.screen}.xml`)));
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, this.graph[this.screen]?.source ?? '<App />', 'utf8');
+    const current = this.graph[this.screen];
+    const source = Array.isArray(current?.source)
+      ? current.source.shift() ?? current.source[current.source.length - 1] ?? '<App />'
+      : current?.source ?? '<App />';
+    fs.writeFileSync(filePath, source, 'utf8');
     return {
       action: 'source',
       args: {
@@ -86,7 +104,11 @@ class ScreenGraphAdapter implements PlatformAdapter {
   }
 
   async exists(target: string): Promise<boolean> {
-    return this.graph[this.screen]?.source.includes(target) ?? false;
+    const current = this.graph[this.screen];
+    if (current?.missingLiveTargets?.includes(target)) {
+      return false;
+    }
+    return current?.liveTargets?.includes(target) || current?.source.includes(target) || false;
   }
 
   async close(): Promise<void> {}
@@ -107,10 +129,24 @@ function scenarioWithTap(target: string): Scenario {
 }
 
 function scenarioWithCoordinateTap(): Scenario {
+  return scenarioWithCoordinateTapAt(10, 20);
+}
+
+function scenarioWithCoordinateTapAt(x: number, y: number): Scenario {
   return {
-    meta: { name: 'coordinate tap', version: '1.0.0' },
+    meta: { name: `coordinate tap ${x},${y}`, version: '1.0.0' },
     config: {},
-    steps: [{ id: 'tap-coordinate', command: 'tap', args: { x: 10, y: 20 } }],
+    steps: [{ id: 'tap-coordinate', command: 'tap', args: { x, y } }],
+    assertions: [],
+    output: {}
+  };
+}
+
+function scenarioWithWait(): Scenario {
+  return {
+    meta: { name: 'wait', version: '1.0.0' },
+    config: {},
+    steps: [{ id: 'wait', command: 'wait', args: { ms: 1 } }],
     assertions: [],
     output: {}
   };
@@ -133,7 +169,7 @@ const graph = {
   },
   settings: {
     source: '<App><Button name="Advanced" label="Advanced" /></App>',
-    taps: { Advanced: 'advanced' }
+    taps: { Advanced: 'advanced', 'text~=Adv': 'advanced' }
   },
   advanced: {
     source: '<App><StaticText name="Done" label="Done" /></App>',
@@ -240,6 +276,36 @@ const ambiguousTextGraph = {
   }
 };
 
+const nestedDuplicateTextGraph = {
+  home: {
+    source: '<App><Button name="Starter" label="Starter" /></App>',
+    taps: { Starter: 'starter' }
+  },
+  starter: {
+    source: '<App><Button name="BABY Portfolio" label="BABY Portfolio" /></App>',
+    taps: { 'text~=BABY': 'baby' }
+  },
+  baby: {
+    source: '<App><StaticText name="BABY" label="BABY" /></App>',
+    taps: {}
+  }
+};
+
+const numericContainsGraph = {
+  home: {
+    source: '<App><Button name="Wallet" label="Wallet" /></App>',
+    taps: { Wallet: 'cash' }
+  },
+  cash: {
+    source: '<App><Button name="$100" label="$100" /></App>',
+    taps: { 'text~=$100': 'selected' }
+  },
+  selected: {
+    source: '<App><StaticText name="Selected" label="Selected" /></App>',
+    taps: {}
+  }
+};
+
 const authGraph = {
   login: {
     source:
@@ -300,7 +366,1127 @@ const typedSecretGraph = {
   }
 };
 
+const liveResolvedTargetGraph = {
+  home: {
+    source: '<App><StaticText name="Deposit" label="Deposit" /></App>',
+    liveTargets: ['Close'],
+    taps: { Close: 'closed' }
+  },
+  closed: {
+    source: '<App><StaticText name="Home" label="Home" /></App>',
+    taps: {}
+  }
+};
+
+const semanticAliasCoordinateGraph = {
+  home: {
+    source:
+      '<App><XCUIElementTypeButton name="See all&#10;See all" label="See all&#10;See all" enabled="true" visible="true" accessible="true" x="322" y="319" width="60" height="26" /></App>',
+    missingLiveTargets: ['See all'],
+    coordinateTaps: { '352,332': 'all-premium' },
+    taps: {}
+  },
+  'all-premium': {
+    source: '<App><StaticText name="Top Premium investors" label="Top Premium investors" /></App>',
+    taps: {}
+  }
+};
+
+const coordinateRouteGraph = {
+  home: {
+    source: '<App><StaticText name="Home" label="Home" /></App>',
+    coordinateTaps: { '10,20': 'settings' },
+    taps: {}
+  },
+  settings: {
+    source: '<App><Button name="Advanced" label="Advanced" /></App>',
+    taps: { Advanced: 'advanced' }
+  },
+  advanced: {
+    source: '<App><StaticText name="Done" label="Done" /></App>',
+    taps: {}
+  }
+};
+
+const noEffectTapGraph = {
+  home: {
+    source: '<App><Button name="Starter" label="Starter" /></App>',
+    taps: { Starter: 'home' }
+  }
+};
+
+const transientLaunchGraph = {
+  home: {
+    source: [
+      '<App><XCUIElementTypeImage x="0" y="244" width="402" height="402" /></App>',
+      '<App><Button name="Premium" label="Premium" x="162" y="787" width="78" height="40" /></App>'
+    ],
+    coordinateTaps: { '201,807': 'premium' },
+    taps: {}
+  },
+  premium: {
+    source: '<App><StaticText name="Premium Investments" label="Premium Investments" /></App>',
+    taps: {}
+  }
+};
+
+const bottomNavCrawlGraph = {
+  home: {
+    source:
+      '<App><Button name="Settings" label="Settings" x="0" y="73" width="350" height="34" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<XCUIElementTypeOther name="Creator Card" label="Creator Card" x="20" y="200" width="160" height="120" /></App>',
+    coordinateTaps: { '124,807': 'starter', '201,807': 'premium', '100,260': 'creator' },
+    taps: {}
+  },
+  starter: {
+    source:
+      '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '201,807': 'premium' },
+    taps: {}
+  },
+  premium: {
+    source:
+      '<App><StaticText name="Premium Investments" label="Premium Investments" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '124,807': 'starter' },
+    taps: {}
+  },
+  creator: {
+    source: '<App><Button name="Back&#10;Creator&#10;Back" label="Back&#10;Creator&#10;Back" x="0" y="73" width="300" height="34" /></App>',
+    coordinateTaps: { '40,90': 'home' },
+    taps: {}
+  }
+};
+
+const premiumInvestorCrawlGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Three ways to get started" label="Three ways to get started" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '124,807': 'starter', '201,807': 'premium' },
+    taps: {}
+  },
+  starter: {
+    source:
+      '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
+      '<XCUIElementTypeOther name="BABY&#10;Justin Bieber&#10;+190.98%" label="BABY&#10;Justin Bieber&#10;+190.98%" enabled="true" visible="true" accessible="true" x="20" y="220" width="350" height="100" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '124,807': 'starter', '201,807': 'premium', '195,270': 'baby' },
+    taps: {}
+  },
+  premium: {
+    source:
+      '<App><StaticText name="Premium Investments" label="Premium Investments" />' +
+      '<Button name="See all&#10;See all" label="See all&#10;See all" x="322" y="319" width="60" height="26" />' +
+      '<XCUIElementTypeOther name="dub Extraordinary X&#10;Capital&#10;$29.9M" label="dub Extraordinary X&#10;Capital&#10;$29.9M" enabled="true" visible="true" accessible="true" x="20" y="350" width="350" height="110" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '195,405': 'profile', '352,332': 'all-premium', '48,807': 'home', '124,807': 'starter' },
+    taps: {}
+  },
+  profile: {
+    source:
+      '<App><Button name="Back&#10;@dub.team&#10;Back" label="Back&#10;@dub.team&#10;Back" x="0" y="73" width="300" height="34" />' +
+      '<Button name="Portfolios (15)&#10;Portfolios (15)" label="Portfolios (15)&#10;Portfolios (15)" x="20" y="300" width="160" height="44" />' +
+      '<Button name="Trade Activity (106)&#10;Trade Activity (106)" label="Trade Activity (106)&#10;Trade Activity (106)" x="180" y="300" width="180" height="44" /></App>',
+    coordinateTaps: { '40,90': 'premium', '270,322': 'activity' },
+    taps: {}
+  },
+  activity: {
+    source:
+      '<App><Button name="Back&#10;@dub.team&#10;Back" label="Back&#10;@dub.team&#10;Back" x="0" y="73" width="300" height="34" />' +
+      '<StaticText name="Buy NKE" label="Buy NKE" />' +
+      '<StaticText name="Sell DIS" label="Sell DIS" />' +
+      '<Button name="Trade Activity (106)&#10;Trade Activity (106)" label="Trade Activity (106)&#10;Trade Activity (106)" x="180" y="300" width="180" height="44" /></App>',
+    coordinateTaps: { '40,90': 'premium' },
+    taps: {}
+  },
+  baby: {
+    source: '<App><Button name="Back&#10;$BABYBABY&#10;Back" label="Back&#10;$BABYBABY&#10;Back" x="0" y="73" width="300" height="34" /></App>',
+    coordinateTaps: { '40,90': 'starter' },
+    taps: {}
+  },
+  'all-premium': {
+    source: '<App><Button name="Back&#10;Top Premium investors&#10;Back" label="Back&#10;Top Premium investors&#10;Back" x="0" y="73" width="300" height="34" /></App>',
+    coordinateTaps: { '40,90': 'premium' },
+    taps: {}
+  }
+};
+
+const virtualBottomNavGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Three ways to get started" label="Three ways to get started" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '124,807': 'starter', '201,807': 'premium' },
+    taps: {}
+  },
+  starter: {
+    source:
+      '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
+      '<Button name="BABY Portfolio" label="BABY Portfolio" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '201,807': 'premium' },
+    taps: { 'text~=BABY': 'baby' }
+  },
+  baby: {
+    source: '<App><Button name="Back&#10;$BABYBABY&#10;Back" label="Back&#10;$BABYBABY&#10;Back" x="0" y="73" width="300" height="34" /></App>',
+    coordinateTaps: { '40,90': 'starter' },
+    taps: {}
+  },
+  premium: {
+    source:
+      '<App><StaticText name="Premium Investments" label="Premium Investments" />' +
+      '<XCUIElementTypeOther name="dub Extraordinary X&#10;Capital&#10;$29.9M" label="dub Extraordinary X&#10;Capital&#10;$29.9M" enabled="true" visible="true" accessible="true" x="20" y="430" width="234" height="112" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '137,486': 'profile', '124,807': 'starter', '48,807': 'home' },
+    taps: {}
+  },
+  profile: {
+    source:
+      '<App><Button name="Back&#10;@dub.team&#10;Back" label="Back&#10;@dub.team&#10;Back" x="0" y="73" width="300" height="34" />' +
+      '<Button name="Trade Activity (106)&#10;Trade Activity (106)" label="Trade Activity (106)&#10;Trade Activity (106)" x="180" y="300" width="180" height="44" /></App>',
+    coordinateTaps: { '40,90': 'premium', '270,322': 'activity' },
+    taps: { 'text~=Trade Activity': 'activity' }
+  },
+  activity: {
+    source:
+      '<App><Button name="Back&#10;@dub.team&#10;Back" label="Back&#10;@dub.team&#10;Back" x="0" y="73" width="300" height="34" />' +
+      '<StaticText name="Buy NKE" label="Buy NKE" /></App>',
+    coordinateTaps: { '40,90': 'premium' },
+    taps: {}
+  }
+};
+
+const incidentalActivityMatchGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Three ways to get started" label="Three ways to get started" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '124,807': 'starter', '355,807': 'activity' },
+    taps: {}
+  },
+  starter: {
+    source:
+      '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
+      '<XCUIElementTypeOther name="1&#10;BABY&#10;Justin Bieber&#10;+190.98%&#10;All-Time" label="1&#10;BABY&#10;Justin Bieber&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '189,708': 'baby', '355,807': 'activity' },
+    taps: { 'text~=BABY': 'baby' }
+  },
+  activity: {
+    source:
+      '<App><StaticText name="For You" label="For You" />' +
+      '<XCUIElementTypeOther name="1&#10;BABY&#10;Justin Bieber&#10;+190.98%&#10;All-Time" label="1&#10;BABY&#10;Justin Bieber&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '124,807': 'starter' },
+    taps: { 'text~=BABY': 'activity-detail' }
+  },
+  baby: {
+    source: '<App><StaticText name="BABY" label="BABY" /></App>',
+    taps: {}
+  },
+  'activity-detail': {
+    source: '<App><StaticText name="Activity detail" label="Activity detail" /></App>',
+    taps: {}
+  }
+};
+
+const sectionFirstGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Three ways to get started" label="Three ways to get started" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '124,807': 'starter' },
+    taps: {}
+  },
+  starter: {
+    source:
+      '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
+      '<XCUIElementTypeButton name="Top Starter investors&#10;Info&#10;Info" label="Top Starter investors&#10;Info&#10;Info" enabled="false" visible="true" accessible="true" x="7" y="317" width="296" height="30" />' +
+      '<XCUIElementTypeOther name="1&#10;Investor One&#10;+210.00%&#10;All-Time" label="1&#10;Investor One&#10;+210.00%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="360" width="363" height="74" />' +
+      '<XCUIElementTypeButton name="Top Starter portfolios&#10;Info&#10;Info" label="Top Starter portfolios&#10;Info&#10;Info" enabled="false" visible="true" accessible="true" x="7" y="625" width="296" height="30" />' +
+      '<XCUIElementTypeButton name="See all&#10;See all" label="See all&#10;See all" enabled="true" visible="true" accessible="true" x="310" y="627" width="60" height="26" />' +
+      '<XCUIElementTypeOther name="1&#10;First Portfolio&#10;Creator One&#10;+190.98%&#10;All-Time" label="1&#10;First Portfolio&#10;Creator One&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<XCUIElementTypeOther name="2&#10;Second Portfolio&#10;Creator Two&#10;+80.12%&#10;All-Time" label="2&#10;Second Portfolio&#10;Creator Two&#10;+80.12%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="751" width="363" height="74" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '189,708': 'first-portfolio', '189,788': 'second-portfolio' },
+    taps: {}
+  },
+  'first-portfolio': {
+    source: '<App><StaticText name="First Portfolio detail" label="First Portfolio detail" /></App>',
+    taps: {}
+  },
+  'second-portfolio': {
+    source: '<App><StaticText name="Second Portfolio detail" label="Second Portfolio detail" /></App>',
+    taps: {}
+  }
+};
+
+const sectionFirstDuplicateVariantGraph = {
+  ...sectionFirstGraph,
+  'starter-duplicate': {
+    source:
+      '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
+      '<StaticText name="Duplicate snapshot marker" label="Duplicate snapshot marker" />' +
+      '<XCUIElementTypeButton name="Top Starter portfolios&#10;Info&#10;Info" label="Top Starter portfolios&#10;Info&#10;Info" enabled="false" visible="true" accessible="true" x="7" y="625" width="296" height="30" />' +
+      '<XCUIElementTypeButton name="See all&#10;See all" label="See all&#10;See all" enabled="true" visible="true" accessible="true" x="310" y="627" width="60" height="26" />' +
+      '<XCUIElementTypeOther name="1&#10;First Portfolio Snapshot&#10;Creator One&#10;+190.98%&#10;All-Time" label="1&#10;First Portfolio Snapshot&#10;Creator One&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home' },
+    taps: {}
+  }
+};
+
+const sectionFirstIncidentalActivityGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Three ways to get started" label="Three ways to get started" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '124,807': 'starter', '355,807': 'activity' },
+    taps: {}
+  },
+  starter: sectionFirstGraph.starter,
+  activity: {
+    source:
+      '<App><StaticText name="For You" label="For You" />' +
+      '<XCUIElementTypeButton name="Top Starter portfolios&#10;Info&#10;Info" label="Top Starter portfolios&#10;Info&#10;Info" enabled="false" visible="true" accessible="true" x="7" y="625" width="296" height="30" />' +
+      '<XCUIElementTypeOther name="1&#10;Activity Echo Portfolio&#10;Creator Echo&#10;+190.98%&#10;All-Time" label="1&#10;Activity Echo Portfolio&#10;Creator Echo&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '124,807': 'starter', '189,708': 'activity-echo-detail' },
+    taps: {}
+  },
+  'first-portfolio': sectionFirstGraph['first-portfolio'],
+  'activity-echo-detail': {
+    source: '<App><StaticText name="Activity echo detail" label="Activity echo detail" /></App>',
+    taps: {}
+  }
+};
+
+const sectionFirstRouteControlGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Three ways to get started" label="Three ways to get started" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '124,807': 'starter', '355,807': 'activity-stale' },
+    taps: {}
+  },
+  starter: sectionFirstGraph.starter,
+  'activity-stale': {
+    source:
+      '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
+      '<StaticText name="Stale activity snapshot" label="Stale activity snapshot" />' +
+      '<StaticText name="One more stale activity marker" label="One more stale activity marker" />' +
+      '<XCUIElementTypeButton name="Top Starter portfolios&#10;Info&#10;Info" label="Top Starter portfolios&#10;Info&#10;Info" enabled="false" visible="true" accessible="true" x="7" y="625" width="296" height="30" />' +
+      '<XCUIElementTypeOther name="1&#10;Activity Echo Portfolio&#10;Creator Echo&#10;+190.98%&#10;All-Time" label="1&#10;Activity Echo Portfolio&#10;Creator Echo&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '124,807': 'starter', '189,708': 'activity-echo-detail' },
+    taps: {}
+  },
+  'first-portfolio': sectionFirstGraph['first-portfolio'],
+  'activity-echo-detail': {
+    source: '<App><StaticText name="Activity echo detail" label="Activity echo detail" /></App>',
+    taps: {}
+  }
+};
+
+const sectionFirstShorterWrongTabGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Three ways to get started" label="Three ways to get started" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '124,807': 'starter-shell', '355,807': 'activity-stale' },
+    taps: {}
+  },
+  'starter-shell': {
+    source:
+      '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
+      '<StaticText name="Starter shell without loaded section" label="Starter shell without loaded section" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '124,807': 'starter' },
+    taps: {}
+  },
+  starter: sectionFirstGraph.starter,
+  'activity-stale': {
+    source:
+      '<App><StaticText name="Activity" label="Activity" />' +
+      '<StaticText name="For You" label="For You" />' +
+      '<XCUIElementTypeButton name="Top Starter portfolios&#10;Info&#10;Info" label="Top Starter portfolios&#10;Info&#10;Info" enabled="false" visible="true" accessible="true" x="7" y="625" width="296" height="30" />' +
+      '<XCUIElementTypeOther name="1&#10;Activity Echo Portfolio&#10;Creator Echo&#10;+190.98%&#10;All-Time" label="1&#10;Activity Echo Portfolio&#10;Creator Echo&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
+      '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: { '48,807': 'home', '124,807': 'starter-shell', '189,708': 'activity-echo-detail' },
+    taps: {}
+  },
+  'first-portfolio': sectionFirstGraph['first-portfolio'],
+  'activity-echo-detail': {
+    source: '<App><StaticText name="Activity echo detail" label="Activity echo detail" /></App>',
+    taps: {}
+  }
+};
+
+const crawlCandidateFilterGraph = {
+  home: {
+    source: [
+      '<App>',
+      '<XCUIElementTypeButton name="Top Starter portfolios&#10;Info&#10;Info" label="Top Starter portfolios&#10;Info&#10;Info" enabled="false" visible="true" accessible="true" x="20" y="120" width="295" height="30" />',
+      '<XCUIElementTypeImage name="Premium creator badge" label="Premium creator badge" enabled="true" visible="true" accessible="true" x="200" y="120" width="15" height="15" />',
+      '<XCUIElementTypeStaticText name="Capital" label="Capital" enabled="true" visible="true" accessible="true" x="20" y="160" width="80" height="20" />',
+      '<XCUIElementTypeOther name="Portfolio Card&#10;Capital&#10;$1.0K" label="Portfolio Card&#10;Capital&#10;$1.0K" enabled="true" visible="true" accessible="true" x="20" y="200" width="160" height="120" />',
+      '</App>'
+    ].join(''),
+    taps: { 'Portfolio Card\nCapital\n$1.0K': 'portfolio' },
+    coordinateTaps: { '100,260': 'portfolio' }
+  },
+  portfolio: {
+    source: '<App><XCUIElementTypeButton name="Back&#10;Portfolio Card&#10;Back" label="Back&#10;Portfolio Card&#10;Back" enabled="true" visible="true" accessible="true" x="0" y="73" width="300" height="34" /></App>',
+    taps: { Back: 'home' },
+    coordinateTaps: { '40,90': 'home' }
+  }
+};
+
 describe('app map execution', () => {
+  it('crawls safe controls during discovery so later runs can route through them', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.crawl',
+      crawl: true,
+      crawlDepth: 2
+    };
+
+    const crawlAdapter = new ScreenGraphAdapter(graph);
+    const discovery = await discoverAppMap(crawlAdapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      action: 'discover',
+      crawl: {
+        enabled: true,
+        actions: 2
+      }
+    });
+
+    const routedAdapter = new ScreenGraphAdapter(graph);
+    const routedRun = await runScenario(
+      scenarioWithTap('Advanced'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:Settings',
+      'source:settings',
+      'tap:Advanced',
+      'source:advanced'
+    ]);
+    expect(routedRun.map?.used).toBe(true);
+  });
+
+  it('crawls enabled tappable cards but ignores disabled headings and static media', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.crawl-filter',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 4
+    };
+
+    const adapter = new ScreenGraphAdapter(crawlCandidateFilterGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        actions: 1
+      }
+    });
+    expect(adapter.actions).toEqual([
+      'source:home',
+      'tap:100,260',
+      'source:portfolio',
+      'tap:40,90',
+      'source:home'
+    ]);
+  });
+
+  it('prioritizes bottom navigation during crawl and restores through target tabs', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.bottom-nav-crawl',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 2
+    };
+
+    const adapter = new ScreenGraphAdapter(bottomNavCrawlGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        actions: 2,
+        stopped_reason: 'limit'
+      }
+    });
+    expect(adapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:48,807',
+      'source:home',
+      'tap:201,807',
+      'source:premium',
+      'tap:48,807',
+      'source:home'
+    ]);
+  });
+
+  it('prioritizes content cards on discovered tab pages so routes can reach nested targets', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.premium-investor-crawl',
+      crawl: true,
+      crawlDepth: 2,
+      crawlLimit: 4
+    };
+
+    const discoveryAdapter = new ScreenGraphAdapter(premiumInvestorCrawlGraph);
+    const discovery = await discoverAppMap(discoveryAdapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        stopped_reason: 'limit'
+      }
+    });
+    expect(discoveryAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:195,270',
+      'source:baby',
+      'tap:40,90',
+      'source:starter',
+      'tap:48,807',
+      'source:home',
+      'tap:201,807',
+      'source:premium',
+      'tap:195,405',
+      'source:profile',
+      'tap:40,90',
+      'source:premium',
+      'tap:48,807',
+      'source:home'
+    ]);
+
+    const routedAdapter = new ScreenGraphAdapter(premiumInvestorCrawlGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('text~=Trade Activity'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:201,807',
+      'source:premium',
+      'tap:195,405',
+      'source:profile',
+      'tap:270,322',
+      'source:activity'
+    ]);
+    expect(routedRun.map?.used).toBe(true);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [
+        { command: 'tap', target: 'x=201,y=807' },
+        { command: 'tap', target: 'x=195,y=405' }
+      ]
+    });
+  });
+
+  it('reuses learned bottom navigation destinations from a new tabbed screen variant', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.virtual-bottom-nav'
+    };
+
+    await runScenario(
+      scenarioWithCoordinateTapAt(124, 807),
+      new ScreenGraphAdapter(virtualBottomNavGraph, 'premium'),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+    await runScenario(
+      scenarioWithCoordinateTapAt(137, 486),
+      new ScreenGraphAdapter(virtualBottomNavGraph, 'premium'),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const starterAdapter = new ScreenGraphAdapter(virtualBottomNavGraph);
+    const starterRun = await runScenario(
+      scenarioWithTap('text~=BABY'),
+      starterAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(starterRun.status).toBe('ok');
+    expect(starterAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:text~=BABY',
+      'source:baby'
+    ]);
+    expect(starterRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=124,y=807' }]
+    });
+
+    const premiumAdapter = new ScreenGraphAdapter(virtualBottomNavGraph);
+    const premiumRun = await runScenario(
+      scenarioWithTap('text~=Trade Activity'),
+      premiumAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(premiumRun.status).toBe('ok');
+    expect(premiumAdapter.actions).toEqual([
+      'source:home',
+      'tap:201,807',
+      'source:premium',
+      'tap:137,486',
+      'source:profile',
+      'tap:270,322',
+      'source:activity'
+    ]);
+    expect(premiumRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [
+        { command: 'tap', target: 'x=201,y=807' },
+        { command: 'tap', target: 'x=137,y=486' }
+      ]
+    });
+  });
+
+  it('prefers a section destination over an incidental activity feed text match', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.incidental-activity-match'
+    };
+
+    await runScenario(
+      scenarioWithCoordinateTapAt(124, 807),
+      new ScreenGraphAdapter(incidentalActivityMatchGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+    await runScenario(
+      scenarioWithCoordinateTapAt(355, 807),
+      new ScreenGraphAdapter(incidentalActivityMatchGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const routedAdapter = new ScreenGraphAdapter(incidentalActivityMatchGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('text~=BABY'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:189,708',
+      'source:baby'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=124,y=807' }]
+    });
+  });
+
+  it('routes a first-in-section target and taps the first item below that section heading', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.section-first'
+    };
+
+    await runScenario(
+      scenarioWithCoordinateTapAt(124, 807),
+      new ScreenGraphAdapter(sectionFirstGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const routedAdapter = new ScreenGraphAdapter(sectionFirstGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('first-in-section=Top Starter portfolios'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:189,708',
+      'source:first-portfolio'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=124,y=807' }]
+    });
+  });
+
+  it('prefers a real bottom-nav edge over a duplicate virtual section destination', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.section-first-duplicate'
+    };
+
+    await discoverAppMap(
+      new ScreenGraphAdapter(sectionFirstDuplicateVariantGraph, 'starter-duplicate'),
+      mapOptions
+    );
+    await runScenario(
+      scenarioWithCoordinateTapAt(124, 807),
+      new ScreenGraphAdapter(sectionFirstDuplicateVariantGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const routedAdapter = new ScreenGraphAdapter(sectionFirstDuplicateVariantGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('first-in-section=Top Starter portfolios'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:189,708',
+      'source:first-portfolio'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=124,y=807' }]
+    });
+  });
+
+  it('prefers the section tab over an incidental activity variant for first-in-section targets', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.section-first-incidental-activity'
+    };
+
+    await discoverAppMap(new ScreenGraphAdapter(sectionFirstIncidentalActivityGraph, 'starter'), mapOptions);
+    await discoverAppMap(new ScreenGraphAdapter(sectionFirstIncidentalActivityGraph, 'activity'), mapOptions);
+
+    const routedAdapter = new ScreenGraphAdapter(sectionFirstIncidentalActivityGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('first-in-section=Top Starter portfolios'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:189,708',
+      'source:first-portfolio'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=124,y=807' }]
+    });
+  });
+
+  it('prefers a route whose nav control matches the requested section', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.section-first-route-control'
+    };
+
+    await runScenario(
+      scenarioWithCoordinateTapAt(124, 807),
+      new ScreenGraphAdapter(sectionFirstRouteControlGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+    await runScenario(
+      scenarioWithCoordinateTapAt(355, 807),
+      new ScreenGraphAdapter(sectionFirstRouteControlGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const routedAdapter = new ScreenGraphAdapter(sectionFirstRouteControlGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('first-in-section=Top Starter portfolios'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:189,708',
+      'source:first-portfolio'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=124,y=807' }]
+    });
+  });
+
+  it('ignores shorter section matches from a conflicting tab', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.section-first-shorter-wrong-tab'
+    };
+
+    await discoverAppMap(new ScreenGraphAdapter(sectionFirstShorterWrongTabGraph, 'starter-shell'), mapOptions);
+    await runScenario(
+      scenarioWithCoordinateTapAt(124, 807),
+      new ScreenGraphAdapter(sectionFirstShorterWrongTabGraph, 'starter-shell'),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+    await discoverAppMap(new ScreenGraphAdapter(sectionFirstShorterWrongTabGraph, 'activity-stale'), mapOptions);
+
+    const routedAdapter = new ScreenGraphAdapter(sectionFirstShorterWrongTabGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('first-in-section=Top Starter portfolios'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter-shell',
+      'tap:124,807',
+      'source:starter',
+      'tap:189,708',
+      'source:first-portfolio'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [
+        { command: 'tap', target: 'x=124,y=807' },
+        { command: 'tap', target: 'x=124,y=807' }
+      ]
+    });
+  });
+
+  it('continues when a stale route contract still lands on the requested section target', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.section-first-stale-contract'
+    };
+
+    await runScenario(
+      scenarioWithCoordinateTapAt(124, 807),
+      new ScreenGraphAdapter(sectionFirstGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
+    const mapPath = path.join(mapRoot, mapFile);
+    const persisted = JSON.parse(fs.readFileSync(mapPath, 'utf8')) as {
+      edges: Array<{
+        target?: string;
+        destination_contract: {
+          variant_id: string;
+          required_targets: string[];
+          normalized_fingerprint: string;
+        };
+      }>;
+    };
+    const starterEdge = persisted.edges.find((edge) => edge.target === 'x=124,y=807');
+    expect(starterEdge).toBeDefined();
+    starterEdge!.destination_contract = {
+      variant_id: 'variant_missing',
+      required_targets: ['text=Definitely Missing'],
+      normalized_fingerprint: 'missing'
+    };
+    fs.writeFileSync(mapPath, `${JSON.stringify(persisted, null, 2)}\n`, 'utf8');
+
+    const routedAdapter = new ScreenGraphAdapter(sectionFirstGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('first-in-section=Top Starter portfolios'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:124,807',
+      'source:starter',
+      'tap:189,708',
+      'source:first-portfolio'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=124,y=807' }]
+    });
+  });
+
+  it('taps a live-visible target even when the stored screen variant omits it', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.live-visible'
+    };
+
+    const adapter = new ScreenGraphAdapter(liveResolvedTargetGraph);
+    const run = await runScenario(
+      scenarioWithTap('Close'),
+      adapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(run.status).toBe('ok');
+    expect(adapter.actions).toEqual(['source:home', 'tap:Close', 'source:closed']);
+    expect(run.steps[0]?.details.map).toMatchObject({
+      routed: false,
+      repaired: false
+    });
+  });
+
+  it('waits past transient source captures before declaring a target unreachable', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.transient-source'
+    };
+
+    const adapter = new ScreenGraphAdapter(transientLaunchGraph);
+    const run = await runScenario(
+      scenarioWithTap('Premium'),
+      adapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(run.status).toBe('ok');
+    expect(adapter.actions).toEqual(['source:home', 'source:home', 'tap:201,807', 'source:premium']);
+  });
+
+  it('uses source coordinates for on-screen semantic aliases that the live selector cannot resolve', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.semantic-coordinate'
+    };
+
+    const adapter = new ScreenGraphAdapter(semanticAliasCoordinateGraph);
+    const run = await runScenario(
+      scenarioWithTap('See all'),
+      adapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(run.status).toBe('ok');
+    expect(adapter.actions).toEqual(['source:home', 'tap:352,332', 'source:all-premium']);
+    expect(run.steps[0]?.details.map).toMatchObject({
+      routed: false,
+      repaired: false
+    });
+
+    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
+    const persisted = JSON.parse(fs.readFileSync(path.join(mapRoot, mapFile), 'utf8')) as {
+      edges: Array<{ target?: string; args: Record<string, unknown> }>;
+    };
+    expect(persisted.edges).toContainEqual(
+      expect.objectContaining({
+        target: 'x=352,y=332',
+        args: { x: 352, y: 332 }
+      })
+    );
+  });
+
   it('learns a destination screen whose labels contain the source screen labels', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
@@ -335,12 +1521,37 @@ describe('app map execution', () => {
     expect(settingsEdge?.from_variant_id).not.toBe(settingsEdge?.to_variant_id);
   });
 
+  it('fails mapped taps that leave the observed screen unchanged', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.no-effect'
+    };
+
+    const adapter = new ScreenGraphAdapter(noEffectTapGraph);
+    const run = await runScenario(
+      scenarioWithTap('Starter'),
+      adapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(run.status).toBe('fail');
+    expect(adapter.actions).toEqual(['source:home', 'tap:Starter', 'source:home']);
+    expect(run.steps[0]?.error?.likely_cause).toContain('no effect');
+  });
+
   it('reuses a learned route to tap a target from a different screen', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
       enabled: true,
       rootDir: mapRoot,
-      appId: 'com.example.settings'
+      appId: 'com.example.settings',
+      repair: true
     };
 
     const learningAdapter = new ScreenGraphAdapter(graph);
@@ -410,12 +1621,108 @@ describe('app map execution', () => {
     expect(report.steps[0]?.details.map?.route?.[0]?.target).toBe('Settings');
   });
 
+  it('routes explicit contains text targets through the app map', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.contains-text'
+    };
+
+    await runScenario(
+      scenarioWithTap('Settings'),
+      new ScreenGraphAdapter(graph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const adapter = new ScreenGraphAdapter(graph);
+    const run = await runScenario(
+      scenarioWithTap('text~=Adv'),
+      adapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(run.status).toBe('ok');
+    expect(adapter.actions).toEqual([
+      'source:home',
+      'tap:Settings',
+      'source:settings',
+      'tap:text~=Adv',
+      'source:advanced'
+    ]);
+    expect(run.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'Settings' }]
+    });
+  });
+
+  it('routes to the nearest reachable contains-text destination instead of failing on a deeper duplicate', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.nested-duplicate-text'
+    };
+
+    await runScenario(
+      scenarioWithTap('Starter'),
+      new ScreenGraphAdapter(nestedDuplicateTextGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+    await runScenario(
+      scenarioWithTap('text~=BABY'),
+      new ScreenGraphAdapter(nestedDuplicateTextGraph, 'starter'),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const routedAdapter = new ScreenGraphAdapter(nestedDuplicateTextGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('text~=BABY'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:Starter',
+      'source:starter',
+      'tap:text~=BABY',
+      'source:baby'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'Starter' }]
+    });
+  });
+
   it('disables map reads and writes in no-map mode', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
       enabled: true,
       rootDir: mapRoot,
-      appId: 'com.example.settings'
+      appId: 'com.example.settings',
+      repair: true
     };
 
     const learningAdapter = new ScreenGraphAdapter(graph);
@@ -455,7 +1762,8 @@ describe('app map execution', () => {
     const mapOptions = {
       enabled: true,
       rootDir: mapRoot,
-      appId: 'com.example.settings'
+      appId: 'com.example.settings',
+      repair: true
     };
 
     const learningAdapter = new ScreenGraphAdapter(graph);
@@ -572,7 +1880,8 @@ describe('app map execution', () => {
     const mapOptions = {
       enabled: true,
       rootDir: mapRoot,
-      appId: 'com.example.disappearing-control'
+      appId: 'com.example.disappearing-control',
+      repair: true
     };
 
     await runScenario(
@@ -622,7 +1931,7 @@ describe('app map execution', () => {
     });
   });
 
-  it('does not continue repair from stale sibling targets after a dead-end branch', async () => {
+  it('does not explore missing targets by default', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
       enabled: true,
@@ -642,7 +1951,7 @@ describe('app map execution', () => {
     );
 
     expect(deadEndRun.status).toBe('fail');
-    expect(deadEndAdapter.actions).toEqual(['source:home', 'tap:Dead End', 'source:dead']);
+    expect(deadEndAdapter.actions).toEqual(['source:home']);
     expect(deadEndAdapter.actions).not.toContain('tap:Preferences');
     expect(deadEndAdapter.actions).not.toContain('tap:Advanced');
     expect(deadEndRun.steps[0]?.error?.likely_cause).toContain('not reachable');
@@ -701,7 +2010,8 @@ describe('app map execution', () => {
     const mapOptions = {
       enabled: true,
       rootDir: mapRoot,
-      appId: 'com.example.cold-determinism'
+      appId: 'com.example.cold-determinism',
+      repair: true
     };
 
     const coldMappedRun = await runScenario(
@@ -849,7 +2159,7 @@ describe('app map execution', () => {
     expect(fs.readFileSync(mapPath, 'utf8')).toContain('secret-token-legacy');
 
     const loadOnlyRun = await runScenario(
-      scenarioWithCoordinateTap(),
+      scenarioWithWait(),
       new ScreenGraphAdapter(typedSecretGraph),
       'simulator',
       undefined,
@@ -906,7 +2216,60 @@ describe('app map execution', () => {
     expect(ambiguousRun.steps[0]?.error?.likely_cause).toContain('ambiguous');
   });
 
-  it('excludes coordinate taps from route planning and map updates', async () => {
+  it('does not route low-specificity contains text targets off screen', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.numeric-contains'
+    };
+
+    await runScenario(
+      scenarioWithTap('Wallet'),
+      new ScreenGraphAdapter(numericContainsGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const offscreenAdapter = new ScreenGraphAdapter(numericContainsGraph);
+    const offscreenRun = await runScenario(
+      scenarioWithTap('text~=$100'),
+      offscreenAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(offscreenRun.status).toBe('fail');
+    expect(offscreenAdapter.actions).toEqual(['source:home']);
+    expect(offscreenRun.steps[0]?.error?.likely_cause).toContain('not reachable');
+
+    const onscreenAdapter = new ScreenGraphAdapter(numericContainsGraph, 'cash');
+    const onscreenRun = await runScenario(
+      scenarioWithTap('text~=$100'),
+      onscreenAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(onscreenRun.status).toBe('ok');
+    expect(onscreenRun.map?.used).toBe(false);
+    expect(onscreenAdapter.actions).toEqual([
+      'source:cash',
+      'tap:text~=$100',
+      'source:selected'
+    ]);
+  });
+
+  it('records coordinate tap transitions as routeable map edges', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
       enabled: true,
@@ -914,20 +2277,7 @@ describe('app map execution', () => {
       appId: 'com.example.coordinates'
     };
 
-    await runScenario(
-      scenarioWithTap('Settings'),
-      new ScreenGraphAdapter(graph),
-      'simulator',
-      undefined,
-      undefined,
-      true,
-      mapOptions
-    );
-    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
-    const mapPath = path.join(mapRoot, mapFile);
-    const before = fs.readFileSync(mapPath, 'utf8');
-
-    const coordinateAdapter = new ScreenGraphAdapter(graph);
+    const coordinateAdapter = new ScreenGraphAdapter(coordinateRouteGraph);
     const coordinateRun = await runScenario(
       scenarioWithCoordinateTap(),
       coordinateAdapter,
@@ -939,9 +2289,44 @@ describe('app map execution', () => {
     );
 
     expect(coordinateRun.status).toBe('ok');
-    expect(coordinateAdapter.actions).toEqual(['tap:10,20']);
-    expect(coordinateRun.map?.updated).toBe(false);
-    expect(fs.readFileSync(mapPath, 'utf8')).toBe(before);
+    expect(coordinateAdapter.actions).toEqual(['source:home', 'tap:10,20', 'source:settings']);
+    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
+    const mapPath = path.join(mapRoot, mapFile);
+    const persisted = JSON.parse(fs.readFileSync(mapPath, 'utf8')) as {
+      edges: Array<{ command: string; target?: string; args: Record<string, unknown> }>;
+    };
+    expect(persisted.edges).toContainEqual(
+      expect.objectContaining({
+        command: 'tap',
+        target: 'x=10,y=20',
+        args: { x: 10, y: 20 }
+      })
+    );
+
+    const routedAdapter = new ScreenGraphAdapter(coordinateRouteGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('Advanced'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'tap:10,20',
+      'source:settings',
+      'tap:Advanced',
+      'source:advanced'
+    ]);
+    expect(routedRun.map?.used).toBe(true);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=10,y=20' }]
+    });
   });
 
   it('short-circuits auth-required states before repair exploration', async () => {

@@ -21,6 +21,8 @@ type TapMode = 'target' | 'coordinates';
 type ScrollDirection = 'up' | 'down';
 type RemoteSession = Awaited<ReturnType<typeof remoteFn>>;
 
+const TEXT_ATTRIBUTES = ['text', 'content-desc', 'label', 'name', 'value'];
+
 interface ParsedTarget {
   strategy: string;
   value: string;
@@ -74,6 +76,46 @@ function pngDimensions(filePath: string): { width: number | null; height: number
   }
 }
 
+function validateRect(rect: unknown): { x: number; y: number; width: number; height: number } {
+  const candidate = rect && typeof rect === 'object' && !Array.isArray(rect)
+    ? (rect as Record<string, unknown>)
+    : {};
+  const x = Number(candidate.x);
+  const y = Number(candidate.y);
+  const width = Number(candidate.width);
+  const height = Number(candidate.height);
+
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    throw new Error('Element rectangle is invalid');
+  }
+
+  return { x, y, width, height };
+}
+
+function xpathLiteral(value: string): string {
+  if (!value.includes("'")) {
+    return `'${value}'`;
+  }
+  if (!value.includes('"')) {
+    return `"${value}"`;
+  }
+
+  return `concat(${value
+    .split("'")
+    .map((part) => `'${part}'`)
+    .join(', "\"\'\"", ')})`;
+}
+
+function textXPath(value: string, mode: 'exact' | 'contains'): string {
+  const literal = xpathLiteral(value);
+  const clauses = TEXT_ATTRIBUTES.map((attribute) =>
+    mode === 'exact'
+      ? `@${attribute} = ${literal}`
+      : `contains(@${attribute}, ${literal})`
+  );
+  return `//*[${clauses.join(' or ')}]`;
+}
+
 export function formatDriverCreationError(
   platform: Platform,
   appId: string | undefined,
@@ -98,34 +140,38 @@ export function formatDriverCreationError(
 }
 
 export function parseTarget(target: string): [string, string] {
+  const valueAfterPrefix = () => target.slice(target.indexOf('=') + 1);
+
+  if (target.startsWith('text~=')) {
+    return [XPATH, textXPath(valueAfterPrefix(), 'contains')];
+  }
+
   if (target.startsWith('text=')) {
-    const value = target.split('=', 2)[1] ?? '';
-    const xpath = `//*[contains(@text, '${value}') or contains(@content-desc, '${value}') or contains(@label, '${value}') or contains(@name, '${value}') or contains(@value, '${value}')]`;
-    return [XPATH, xpath];
+    return [XPATH, textXPath(valueAfterPrefix(), 'exact')];
   }
 
   if (target.startsWith('id=')) {
-    return [ELEMENT_ID, target.split('=', 2)[1] ?? ''];
+    return [ELEMENT_ID, valueAfterPrefix()];
   }
 
   if (target.startsWith('xpath=')) {
-    return [XPATH, target.split('=', 2)[1] ?? ''];
+    return [XPATH, valueAfterPrefix()];
   }
 
   if (target.startsWith('uiautomator=')) {
-    return [ANDROID_UIAUTOMATOR, target.split('=', 2)[1] ?? ''];
+    return [ANDROID_UIAUTOMATOR, valueAfterPrefix()];
   }
 
   if (target.startsWith('predicate=')) {
-    return [IOS_PREDICATE, target.split('=', 2)[1] ?? ''];
+    return [IOS_PREDICATE, valueAfterPrefix()];
   }
 
   if (target.startsWith('classchain=')) {
-    return [IOS_CLASS_CHAIN, target.split('=', 2)[1] ?? ''];
+    return [IOS_CLASS_CHAIN, valueAfterPrefix()];
   }
 
   if (target.startsWith('accessibility=')) {
-    return [ACCESSIBILITY_ID, target.split('=', 2)[1] ?? ''];
+    return [ACCESSIBILITY_ID, valueAfterPrefix()];
   }
 
   return [ACCESSIBILITY_ID, target];
@@ -274,7 +320,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
     const target = String(args.target);
     const selector = selectorForTarget(target);
     const element = await this.requireDriver().$(selector.selector);
-    await element.click();
+    await this.tapElementCenter(element);
     return {
       action: 'tap',
       platform: this.platform,
@@ -496,6 +542,37 @@ export class RealAppiumAdapter implements PlatformAdapter {
     }
 
     throw new Error(`Coordinate tap is unsupported for platform: ${this.platform}`);
+  }
+
+  private async tapElementCenter(element: any): Promise<void> {
+    try {
+      const rect = await this.elementRect(element);
+      const x = Math.round(rect.x + rect.width / 2);
+      const y = Math.round(rect.y + rect.height / 2);
+      await this.tapPoint(x, y);
+    } catch {
+      await element.click();
+    }
+  }
+
+  private async elementRect(element: any): Promise<{ x: number; y: number; width: number; height: number }> {
+    if (typeof element.getRect === 'function') {
+      const rect = await element.getRect();
+      return validateRect(rect);
+    }
+
+    if (typeof element.getLocation === 'function' && typeof element.getSize === 'function') {
+      const location = await element.getLocation();
+      const size = await element.getSize();
+      return validateRect({
+        x: location.x,
+        y: location.y,
+        width: size.width,
+        height: size.height
+      });
+    }
+
+    throw new Error('Element rectangle is unavailable');
   }
 
   private async scrollViewport(direction: ScrollDirection, gesturePercent: number): Promise<void> {

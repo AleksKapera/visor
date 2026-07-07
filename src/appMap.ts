@@ -17,7 +17,7 @@ import { canonicalJson, ensureDir, signatureFor, utcNowIso } from './utils.js';
 export const APP_MAP_SCHEMA_VERSION = 1;
 
 type ControlSafety = 'safe' | 'needs-input' | 'risky' | 'unknown';
-type TargetKind = 'stable' | 'text' | 'coordinate' | 'unknown';
+type TargetKind = 'stable' | 'text' | 'text-contains' | 'section-first' | 'coordinate' | 'unknown';
 
 interface SourceElement {
   tag: string;
@@ -26,6 +26,13 @@ interface SourceElement {
   labels: string[];
   stable: boolean;
   safety: ControlSafety;
+  enabled: boolean;
+  visible: boolean;
+  clickable: boolean;
+  x: number | null;
+  y: number | null;
+  width: number | null;
+  height: number | null;
 }
 
 interface ScreenObservation {
@@ -34,6 +41,10 @@ interface ScreenObservation {
   elements: SourceElement[];
   element_keys: string[];
   auth_required: boolean;
+}
+
+interface SourceCapture {
+  source: string;
 }
 
 interface AppMapScreen {
@@ -94,6 +105,10 @@ interface ResolvedMapOptions {
   appId: string;
   repairDepth: number;
   repairTimeoutMs: number;
+  repair: boolean;
+  crawl: boolean;
+  crawlDepth: number;
+  crawlLimit: number;
 }
 
 interface AppMapContext {
@@ -139,6 +154,25 @@ interface RepairAttempt {
   remainingDepth: number;
 }
 
+interface TapCandidate {
+  target: string;
+  args: Record<string, unknown>;
+  key: string;
+}
+
+interface TapCandidateOptions {
+  preferContent?: boolean;
+  excludeNavigation?: boolean;
+  skipCurrentNavigation?: boolean;
+}
+
+interface CrawlSummary {
+  enabled: boolean;
+  actions: number;
+  variants: number;
+  stopped_reason: string;
+}
+
 interface TargetDescriptor {
   kind: TargetKind;
   target?: string;
@@ -164,6 +198,13 @@ const RISKY_WORDS = [
 
 const INPUT_WORDS = ['password', 'email', 'username', 'search', 'input', 'text field', 'textfield'];
 const AUTH_WORDS = ['login', 'log in', 'sign in', 'password', 'username', 'auth', 'authentication'];
+const NAV_TARGET_PRIORITY = new Map([
+  ['starter', 0],
+  ['premium', 1],
+  ['leaderboard', 2],
+  ['activity', 3],
+  ['home', 4]
+]);
 
 function envNoMap(): boolean {
   const raw = process.env.VISOR_NO_MAP ?? process.env.VISOR_DISABLE_MAP;
@@ -177,7 +218,11 @@ function resolveOptions(platform: Platform, options?: MapExecutionOptions): Reso
     rootDir: options?.rootDir ?? process.env.VISOR_APP_MAP_DIR ?? path.join(process.cwd(), '.visor', 'maps'),
     appId: options?.appId ?? `default-${platform}`,
     repairDepth: options?.repairDepth ?? 2,
-    repairTimeoutMs: options?.repairTimeoutMs ?? 30000
+    repairTimeoutMs: options?.repairTimeoutMs ?? 30000,
+    repair: options?.repair === true,
+    crawl: options?.crawl === true,
+    crawlDepth: options?.crawlDepth ?? 2,
+    crawlLimit: options?.crawlLimit ?? 24
   };
 }
 
@@ -293,9 +338,20 @@ function attributeMap(input: string): Record<string, string> {
   const attrs: Record<string, string> = {};
   const pattern = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)')/g;
   for (const match of input.matchAll(pattern)) {
-    attrs[match[1]] = match[3] ?? match[4] ?? '';
+    attrs[match[1]] = decodeXmlEntities(match[3] ?? match[4] ?? '');
   }
   return attrs;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
 }
 
 function normalizeLabel(value: string): string {
@@ -310,6 +366,36 @@ function normalizeLabel(value: string): string {
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.trim() !== '')));
+}
+
+function attrBool(attrs: Record<string, string>, key: string, defaultValue: boolean): boolean {
+  const raw = attrs[key];
+  if (raw === undefined) {
+    return defaultValue;
+  }
+  return raw.trim().toLowerCase() === 'true';
+}
+
+function attrNumber(attrs: Record<string, string>, key: string): number | null {
+  const parsed = Number(attrs[key]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function expandSemanticLabels(labels: string[]): string[] {
+  return labels.flatMap((label) => {
+    const lines = unique(label.split(/\n+/).map((line) => line.trim()));
+    if (lines.length === 1 && lines[0] !== label) {
+      return [label, lines[0]];
+    }
+    if (lines.length > 1 && label.split(/\n+/).filter((line) => line.trim() !== '').every((line) => line.trim() === lines[0])) {
+      return [label, lines[0]];
+    }
+    const rawLines = label.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    if (rawLines.length >= 3 && rawLines[0] === rawLines[rawLines.length - 1]) {
+      return [label, rawLines[0]];
+    }
+    return [label];
+  });
 }
 
 function isLikelyFormControl(tag: string, attrs: Record<string, string>): boolean {
@@ -375,7 +461,7 @@ function extractElements(source: string): SourceElement[] {
     const attrs = attributeMap(match[2] ?? '');
     const bodyText = (match[3] ?? '').trim();
     const formControl = isLikelyFormControl(tag, attrs);
-    const rawLabels = unique([
+    const rawLabels = unique(expandSemanticLabels([
       redactLabel(attrs.name ?? ''),
       redactLabel(attrs.label ?? ''),
       formControl ? '' : redactLabel(attrs.text ?? ''),
@@ -383,7 +469,7 @@ function extractElements(source: string): SourceElement[] {
       redactLabel(attrs['content-desc'] ?? ''),
       redactLabel(attrs['contentDescription'] ?? ''),
       formControl ? '' : redactLabel(bodyText)
-    ]);
+    ]));
     const id = attrs['resource-id'] ?? attrs.id ?? attrs.identifier ?? '';
     const targets = unique([
       ...rawLabels,
@@ -402,7 +488,14 @@ function extractElements(source: string): SourceElement[] {
       targets,
       labels: rawLabels,
       stable,
-      safety: classifyControl(tag, rawLabels, attrs)
+      safety: classifyControl(tag, rawLabels, attrs),
+      enabled: attrBool(attrs, 'enabled', true),
+      visible: attrBool(attrs, 'visible', true),
+      clickable: attrBool(attrs, 'clickable', false),
+      x: attrNumber(attrs, 'x'),
+      y: attrNumber(attrs, 'y'),
+      width: attrNumber(attrs, 'width'),
+      height: attrNumber(attrs, 'height')
     });
   }
 
@@ -442,15 +535,56 @@ function similarity(left: string[], right: string[]): number {
   return containment >= 0.8 ? Math.max(jaccard, containment) : jaccard;
 }
 
-function elementIdentityKeys(elements: SourceElement[]): string[] {
+function identityKeys(elements: SourceElement[], includeStatic: boolean): string[] {
   return unique(
     elements.flatMap((element) => {
       const tag = element.tag.toLowerCase();
-      const labels = element.labels.map(normalizeLabel);
+      if (!includeStatic && isStaticIdentityElement(element)) {
+        return [];
+      }
+      const labels = element.labels
+        .filter((label) => !isGlobalIdentityLabel(label, element))
+        .map(normalizeLabel);
       const ids = element.targets.filter((target) => target.startsWith('id=')).map(normalizeLabel);
       return [...labels, ...ids].map((value) => `${tag}:${element.safety}:${value}`);
     })
   ).sort();
+}
+
+function isStaticIdentityElement(element: SourceElement): boolean {
+  const tag = element.tag.toLowerCase();
+  return element.safety === 'unknown' || tag.includes('statictext') || tag.includes('image') || tag.includes('scrollview');
+}
+
+function screenSimilarity(left: SourceElement[], right: SourceElement[]): number {
+  const leftControlKeys = identityKeys(left, false);
+  const rightControlKeys = identityKeys(right, false);
+  const fullScore = similarity(identityKeys(left, true), identityKeys(right, true));
+  if (leftControlKeys.length === 0 && rightControlKeys.length === 0) {
+    return fullScore;
+  }
+  return Math.max(fullScore, similarity(leftControlKeys, rightControlKeys));
+}
+
+function isGlobalIdentityLabel(label: string, element?: SourceElement): boolean {
+  const normalized = normalizeControlTarget(label);
+  if (normalized.startsWith('com.dubapp.dev')) {
+    return true;
+  }
+  if (['settings settings', 'notifications notifications'].includes(normalized)) {
+    return true;
+  }
+
+  for (const navTarget of NAV_TARGET_PRIORITY.keys()) {
+    if (normalized === `${navTarget} ${navTarget}`) {
+      return true;
+    }
+    if (normalized === navTarget && (!element || isLikelyTapElement(element))) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function newVariant(map: AppMapFile, observation: ScreenObservation): AppMapVariant {
@@ -484,7 +618,7 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
     const score =
       variant.normalized_fingerprint === observation.normalized_fingerprint
         ? 1
-        : similarity(elementIdentityKeys(variant.elements), elementIdentityKeys(observation.elements));
+        : screenSimilarity(variant.elements, observation.elements);
     if (score > bestScore) {
       best = variant;
       bestScore = score;
@@ -515,7 +649,7 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
   };
 }
 
-async function observeCurrentScreen(context: AppMapContext): Promise<ObservedVariant> {
+async function captureCurrentSource(context: AppMapContext): Promise<SourceCapture> {
   const sourceDir = ensureDir(path.join(os.tmpdir(), 'visor-app-map-source'));
   const sourcePath = path.join(sourceDir, `${process.pid}-${Date.now()}-${randomUUID()}.xml`);
   const details = await context.adapter.source({ label: 'app-map-source', path: sourcePath });
@@ -533,9 +667,32 @@ async function observeCurrentScreen(context: AppMapContext): Promise<ObservedVar
   } catch {
     // Source observations are transient; stale temp files should not fail a run.
   }
-  const observed = upsertVariant(context.map, observeSource(source));
+  return { source };
+}
+
+function isTransientObservation(observation: ScreenObservation): boolean {
+  return observation.elements.length === 0 || observation.element_keys.length === 0;
+}
+
+async function observeCurrentScreen(context: AppMapContext): Promise<ObservedVariant> {
+  let observation: ScreenObservation | null = null;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const captured = await captureCurrentSource(context);
+    observation = observeSource(captured.source);
+    if (!isTransientObservation(observation) || attempt === 4) {
+      break;
+    }
+    await delay(500);
+  }
+
+  const observed = upsertVariant(context.map, observation ?? observeSource(''));
   context.changed = true;
   return observed;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function targetDescriptor(command: CommandName, args: Record<string, unknown>): TargetDescriptor {
@@ -546,7 +703,7 @@ function targetDescriptor(command: CommandName, args: Record<string, unknown>): 
   if (command === 'tap') {
     try {
       if (resolveTapMode(args) === 'coordinates') {
-        return { kind: 'coordinate', confidence: 0 };
+        return { kind: 'coordinate', target: coordinateTarget(args), confidence: 0.5 };
       }
     } catch {
       return { kind: 'unknown', confidence: 0 };
@@ -556,6 +713,14 @@ function targetDescriptor(command: CommandName, args: Record<string, unknown>): 
   const target = typeof args.target === 'string' ? args.target : undefined;
   if (!target) {
     return { kind: 'unknown', confidence: 0 };
+  }
+
+  if (target.startsWith('first-in-section=')) {
+    return { kind: 'section-first', target, value: target.slice(17), confidence: 0.55 };
+  }
+
+  if (target.startsWith('text~=')) {
+    return { kind: 'text-contains', target, value: target.slice(6), confidence: 0.45 };
   }
 
   if (target.startsWith('text=')) {
@@ -569,6 +734,13 @@ function targetDescriptor(command: CommandName, args: Record<string, unknown>): 
   return { kind: 'stable', target, value: target.replace(/^(id=|accessibility=)/, ''), confidence: 0.9 };
 }
 
+function coordinateTarget(args: Record<string, unknown>): string {
+  const x = Number(args.x);
+  const y = Number(args.y);
+  const base = `x=${Number.isFinite(x) ? x : String(args.x)},y=${Number.isFinite(y) ? y : String(args.y)}`;
+  return args.normalized === true ? `${base},normalized=true` : base;
+}
+
 function isValueBearingAction(command: CommandName, args: Record<string, unknown>): boolean {
   return command === 'act' && args.name === 'type' && args.value !== undefined;
 }
@@ -577,26 +749,69 @@ function replayableEdge(edge: AppMapEdge): boolean {
   return !isValueBearingAction(edge.command, edge.args);
 }
 
-function variantContainsTarget(variant: AppMapVariant, descriptor: TargetDescriptor): boolean {
+function elementContainsTarget(element: SourceElement, descriptor: TargetDescriptor): boolean {
+  if (descriptor.kind === 'section-first') {
+    return false;
+  }
+
   if (!descriptor.target && !descriptor.value) {
     return false;
   }
 
   const target = descriptor.target ?? '';
   const value = descriptor.value ?? target;
-  return variant.elements.some((element) => {
-    if (element.targets.includes(target) || element.targets.includes(value)) {
-      return true;
-    }
-    if (descriptor.kind === 'text') {
-      return element.labels.some((label) => label === value);
-    }
-    return element.labels.some((label) => label === value);
-  });
+  if (element.targets.includes(target) || element.targets.includes(value)) {
+    return true;
+  }
+  if (descriptor.kind === 'text-contains') {
+    return element.labels.some((label) => label.includes(value));
+  }
+  return element.labels.some((label) => label === value);
+}
+
+function variantContainsTarget(variant: AppMapVariant, descriptor: TargetDescriptor): boolean {
+  if (descriptor.kind === 'section-first') {
+    return sectionFirstTapArgs(variant, descriptor) !== null;
+  }
+
+  return variant.elements.some((element) => elementContainsTarget(element, descriptor));
+}
+
+async function liveContainsTarget(context: AppMapContext, descriptor: TargetDescriptor): Promise<boolean> {
+  if (descriptor.kind === 'section-first') {
+    return false;
+  }
+
+  const target = descriptor.target ?? descriptor.value;
+  if (!target) {
+    return false;
+  }
+
+  try {
+    return await context.adapter.exists(target);
+  } catch {
+    return false;
+  }
 }
 
 function candidateVariants(map: AppMapFile, descriptor: TargetDescriptor): AppMapVariant[] {
-  return map.variants.filter((variant) => variantContainsTarget(variant, descriptor));
+  return map.variants.filter(
+    (variant) => variantContainsTarget(variant, descriptor) && variantMatchesDescriptorContext(variant, descriptor)
+  );
+}
+
+function variantMatchesDescriptorContext(variant: AppMapVariant, descriptor: TargetDescriptor): boolean {
+  if (descriptor.kind !== 'section-first') {
+    return true;
+  }
+
+  const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '');
+  if (!navigationHint) {
+    return true;
+  }
+
+  const navigationTarget = preferredNavigationTarget(variant);
+  return !navigationTarget || navigationTarget === navigationHint;
 }
 
 function summarizeEdge(edge: AppMapEdge): MapRouteStep {
@@ -616,7 +831,7 @@ function summarizeControl(command: CommandName, target: string, confidence: numb
 }
 
 function planRoute(map: AppMapFile, fromVariantId: string, descriptor: TargetDescriptor): PlannedRoute {
-  if (descriptor.kind === 'coordinate' || descriptor.kind === 'unknown') {
+  if (descriptor.kind === 'coordinate' || descriptor.kind === 'unknown' || !routeableDescriptor(descriptor)) {
     return { edges: [], ambiguous: false, authRequired: false };
   }
 
@@ -625,13 +840,11 @@ function planRoute(map: AppMapFile, fromVariantId: string, descriptor: TargetDes
     return { edges: [], ambiguous: false, authRequired: false };
   }
 
-  if (descriptor.kind === 'text' && destinations.length > 1) {
-    return { edges: [], ambiguous: true, authRequired: false };
-  }
-
   const destinationIds = new Set(destinations.map((variant) => variant.id));
   const visited = new Set<string>([fromVariantId]);
   const queue: Array<{ variantId: string; edges: AppMapEdge[] }> = [{ variantId: fromVariantId, edges: [] }];
+  const reachableRoutes: Array<{ variantId: string; edges: AppMapEdge[] }> = [];
+  let shortestDestinationLength: number | null = null;
 
   while (queue.length > 0) {
     const current = queue.shift();
@@ -640,11 +853,22 @@ function planRoute(map: AppMapFile, fromVariantId: string, descriptor: TargetDes
     }
 
     if (destinationIds.has(current.variantId)) {
-      const destination = map.variants.find((variant) => variant.id === current.variantId);
-      return { edges: current.edges, ambiguous: false, authRequired: Boolean(destination?.auth_required) };
+      if (shortestDestinationLength === null) {
+        shortestDestinationLength = current.edges.length;
+      }
+      if (current.edges.length === shortestDestinationLength) {
+        reachableRoutes.push(current);
+      }
+      continue;
+    }
+    if (shortestDestinationLength !== null && current.edges.length >= shortestDestinationLength) {
+      continue;
     }
 
-    const outgoing = map.edges
+    const outgoing = [
+      ...map.edges,
+      ...navigationVirtualEdges(map, map.variants.find((variant) => variant.id === current.variantId))
+    ]
       .filter((edge) => edge.from_variant_id === current.variantId && !edge.stale && edge.confidence >= 0.25 && replayableEdge(edge))
       .sort((left, right) => right.confidence - left.confidence);
     for (const edge of outgoing) {
@@ -656,7 +880,226 @@ function planRoute(map: AppMapFile, fromVariantId: string, descriptor: TargetDes
     }
   }
 
+  if (reachableRoutes.length > 0) {
+    const rankedRoutes = reachableRoutes
+      .map((route) => ({
+        ...route,
+        score:
+          destinationTargetScore(
+            map.variants.find((variant) => variant.id === route.variantId),
+            descriptor
+          ) + routeTargetScore(map, route.edges, descriptor)
+      }))
+      .sort((left, right) => right.score - left.score);
+    const best = rankedRoutes[0];
+    if (!best) {
+      return { edges: [], ambiguous: false, authRequired: false };
+    }
+    const tiedBest = rankedRoutes.filter((route) => route.score === best.score);
+    if (
+      (descriptor.kind === 'text' || descriptor.kind === 'text-contains' || descriptor.kind === 'section-first') &&
+      tiedBest.length > 1
+    ) {
+      return { edges: [], ambiguous: true, authRequired: false };
+    }
+    const route = best;
+    const destination = map.variants.find((variant) => variant.id === route?.variantId);
+    return { edges: route?.edges ?? [], ambiguous: false, authRequired: Boolean(destination?.auth_required) };
+  }
+
   return { edges: [], ambiguous: false, authRequired: destinations.some((variant) => variant.auth_required) };
+}
+
+function routeableDescriptor(descriptor: TargetDescriptor): boolean {
+  if (descriptor.kind === 'section-first') {
+    const value = descriptor.value ?? descriptor.target ?? '';
+    return /[a-z]/i.test(value);
+  }
+
+  if (descriptor.kind !== 'text-contains') {
+    return true;
+  }
+
+  const value = descriptor.value ?? descriptor.target ?? '';
+  return /[a-z]/i.test(value);
+}
+
+function navigationVirtualEdges(map: AppMapFile, variant: AppMapVariant | undefined): AppMapEdge[] {
+  if (!variant) {
+    return [];
+  }
+
+  const currentNavigationTarget = preferredNavigationTarget(variant);
+  const edges: AppMapEdge[] = [];
+  const destinationsByTarget = new Map<string, AppMapVariant>();
+
+  for (const destination of map.variants) {
+    if (destination.id === variant.id) {
+      continue;
+    }
+    const target = preferredNavigationTarget(destination);
+    if (!target || target === currentNavigationTarget || destinationsByTarget.has(target)) {
+      continue;
+    }
+    destinationsByTarget.set(target, destination);
+  }
+
+  for (const candidate of safeTapCandidates(variant, { skipCurrentNavigation: true })) {
+    const target = normalizeControlTarget(candidate.target);
+    const destination = destinationsByTarget.get(target);
+    if (!destination) {
+      continue;
+    }
+    if (hasRealEdgeForTap(map, variant.id, candidate)) {
+      continue;
+    }
+
+    edges.push({
+      id: `virtual_nav_${variant.id}_${target}`,
+      from_variant_id: variant.id,
+      to_variant_id: destination.id,
+      command: 'tap',
+      args: structuredClone(candidate.args),
+      target: targetDescriptor('tap', candidate.args).target,
+      confidence: 0.4,
+      successes: 0,
+      failures: 0,
+      stale: false,
+      candidate: true,
+      destination_contract: {
+        variant_id: destination.id,
+        required_targets: contractTargets(destination),
+        normalized_fingerprint: destination.normalized_fingerprint
+      },
+      last_observed_at: utcNowIso()
+    });
+  }
+
+  return edges;
+}
+
+function hasRealEdgeForTap(map: AppMapFile, fromVariantId: string, candidate: TapCandidate): boolean {
+  const descriptor = targetDescriptor('tap', candidate.args);
+  const candidateTargets = new Set([candidate.key, candidate.target, descriptor.target, descriptor.value].filter(Boolean));
+
+  return map.edges.some(
+    (edge) =>
+      edge.from_variant_id === fromVariantId &&
+      !edge.stale &&
+      edge.confidence >= 0.25 &&
+      replayableEdge(edge) &&
+      candidateTargets.has(edge.target)
+  );
+}
+
+function destinationTargetScore(variant: AppMapVariant | undefined, descriptor: TargetDescriptor): number {
+  if (!variant) {
+    return 0;
+  }
+
+  if (descriptor.kind === 'section-first') {
+    const element = firstItemInSection(variant, descriptor);
+    if (!element) {
+      return 0;
+    }
+
+    let score = isHighValueContentCard(element) ? 10 : 7;
+    const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '');
+    const navigationTarget = preferredNavigationTarget(variant);
+    if (navigationHint && navigationTarget === navigationHint) {
+      score += 5;
+    } else if (navigationHint && navigationTarget && navigationTarget !== navigationHint) {
+      score -= 5;
+    }
+    return score;
+  }
+
+  let score = 0;
+  for (const element of variant.elements) {
+    if (!elementContainsTarget(element, descriptor)) {
+      continue;
+    }
+
+    let elementScore = 1;
+    if (isLikelyTapElement(element)) {
+      elementScore += 4;
+    } else if (element.visible === false) {
+      elementScore -= 2;
+    }
+    if (isHighValueContentCard(element)) {
+      elementScore += 3;
+    }
+    const value = normalizeControlTarget(descriptor.value ?? descriptor.target ?? '');
+    if (
+      value &&
+      element.labels.some((label) =>
+        normalizeControlTarget(label) === value ||
+        label.split(/\n+/).some((line) => normalizeControlTarget(line) === value)
+      )
+    ) {
+      elementScore += 2;
+    }
+    score = Math.max(score, elementScore);
+  }
+
+  const navigationTarget = preferredNavigationTarget(variant);
+  const value = normalizeControlTarget(descriptor.value ?? descriptor.target ?? '');
+  if (navigationTarget === 'activity' && !/(activity|feed|investments?)/.test(value)) {
+    score -= 4;
+  }
+  if ((navigationTarget === 'starter' || navigationTarget === 'premium') && score > 0) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function routeTargetScore(map: AppMapFile, route: AppMapEdge[], descriptor: TargetDescriptor): number {
+  if (descriptor.kind !== 'section-first') {
+    return 0;
+  }
+
+  const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '');
+  if (!navigationHint) {
+    return 0;
+  }
+
+  return route.reduce((score, edge) => {
+    const target = edgeNavigationTarget(map, edge);
+    if (!target) {
+      return score;
+    }
+    return score + (target === navigationHint ? 3 : -3);
+  }, 0);
+}
+
+function edgeNavigationTarget(map: AppMapFile, edge: AppMapEdge): string | null {
+  const normalizedTarget = normalizeControlTarget(edge.target ?? '');
+  if (NAV_TARGET_PRIORITY.has(normalizedTarget)) {
+    return normalizedTarget;
+  }
+
+  const from = map.variants.find((variant) => variant.id === edge.from_variant_id);
+  if (!from || edge.command !== 'tap') {
+    return null;
+  }
+
+  const edgeCoordinateTarget = coordinateTarget(edge.args);
+  for (const element of from.elements) {
+    if (!isLikelyTapElement(element)) {
+      continue;
+    }
+    const target = normalizeControlTarget(plainTapTargets(element)[0] ?? element.selector);
+    if (!NAV_TARGET_PRIORITY.has(target)) {
+      continue;
+    }
+    const elementCoordinateTarget = coordinateArgsForElement(element);
+    if (elementCoordinateTarget && coordinateTarget(elementCoordinateTarget) === edgeCoordinateTarget) {
+      return target;
+    }
+  }
+
+  return null;
 }
 
 function contractTargets(variant: AppMapVariant): string[] {
@@ -693,7 +1136,7 @@ function recordEdgeSuccess(
   }
 
   const descriptor = targetDescriptor(command, args);
-  if (descriptor.kind === 'coordinate' || descriptor.kind === 'unknown') {
+  if (descriptor.kind === 'unknown') {
     return;
   }
 
@@ -747,6 +1190,29 @@ function demoteEdge(context: AppMapContext, edge: AppMapEdge): void {
   context.changed = true;
 }
 
+function shouldRequireObservedEffect(command: CommandName, args: Record<string, unknown>): boolean {
+  return command === 'tap' || command === 'navigate' || (command === 'act' && args.name === 'back');
+}
+
+function assertObservedEffect(
+  command: CommandName,
+  args: Record<string, unknown>,
+  before: ObservedVariant,
+  after: ObservedVariant,
+  descriptor: TargetDescriptor
+): void {
+  if (!shouldRequireObservedEffect(command, args)) {
+    return;
+  }
+
+  if (before.observation.fingerprint !== after.observation.fingerprint) {
+    return;
+  }
+
+  const target = descriptor.target ?? descriptor.value ?? command;
+  throw new Error(`Action '${command}' on '${target}' had no effect: screen source did not change after the command`);
+}
+
 function satisfiesContract(edge: AppMapEdge, observed: ObservedVariant): boolean {
   if (observed.variant.id === edge.destination_contract.variant_id) {
     return true;
@@ -793,15 +1259,385 @@ async function driveRoute(
   return { current };
 }
 
-function safeTapTargets(variant: AppMapVariant): string[] {
-  return unique(
-    variant.elements
-      .filter((element) => element.safety === 'safe' && element.stable)
-      .map((element) => {
-        const plainLabel = element.targets.find((target) => !target.includes('='));
-        return plainLabel ?? element.targets[0] ?? '';
-      })
+function safeTapCandidates(variant: AppMapVariant, options: TapCandidateOptions = {}): TapCandidate[] {
+  const candidates: TapCandidate[] = [];
+  const seen = new Set<string>();
+  const currentNavigationTarget = options.skipCurrentNavigation ? preferredNavigationTarget(variant) : null;
+  const elements = [...variant.elements].sort((left, right) => {
+    const priority = tapElementPriority(left, options) - tapElementPriority(right, options);
+    if (priority !== 0) {
+      return priority;
+    }
+    return (left.y ?? 0) - (right.y ?? 0) || (left.x ?? 0) - (right.x ?? 0);
+  });
+
+  for (const element of elements) {
+    if (!(element.safety === 'safe' && element.stable && isLikelyTapElement(element))) {
+      continue;
+    }
+
+    const target = plainTapTargets(element)[0] ?? element.selector;
+    if (!target) {
+      continue;
+    }
+    const normalizedTarget = normalizeControlTarget(target);
+    if (options.excludeNavigation && NAV_TARGET_PRIORITY.has(normalizedTarget)) {
+      continue;
+    }
+    if (currentNavigationTarget && normalizedTarget === currentNavigationTarget) {
+      continue;
+    }
+
+    const coordinateArgs = coordinateArgsForElement(element);
+    const args = coordinateArgs ?? { target };
+    const key = coordinateArgs ? coordinateTarget(coordinateArgs) : target;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    candidates.push({ target, args, key });
+  }
+
+  return candidates;
+}
+
+function tapElementPriority(element: SourceElement, options: TapCandidateOptions = {}): number {
+  const target = plainTapTargets(element)[0] ?? element.selector;
+  const normalized = normalizeControlTarget(target);
+  if (options.preferContent && isHighValueContentCard(element)) {
+    return 5;
+  }
+
+  const navPriority = NAV_TARGET_PRIORITY.get(normalized);
+  if (navPriority !== undefined) {
+    if (options.preferContent) {
+      return 80 + navPriority;
+    }
+    return navPriority;
+  }
+
+  if (normalized === 'see all') {
+    return 10;
+  }
+  if (normalized === 'deposit') {
+    return 20;
+  }
+  if (isBackControl(element)) {
+    return 90;
+  }
+  if (element.tag.toLowerCase().includes('button')) {
+    return 40;
+  }
+  if (element.tag.toLowerCase().includes('other')) {
+    return 60;
+  }
+  return 50;
+}
+
+function isHighValueContentCard(element: SourceElement): boolean {
+  if (!isLikelyTapElement(element)) {
+    return false;
+  }
+  const target = plainTapTargets(element)[0] ?? element.selector;
+  if (NAV_TARGET_PRIORITY.has(normalizeControlTarget(target))) {
+    return false;
+  }
+
+  const haystack = element.labels.join(' ').toLowerCase();
+  return (
+    haystack.includes('capital') ||
+    haystack.includes('all-time') ||
+    haystack.includes('vs. market') ||
+    /\+\s*\d/.test(haystack)
   );
+}
+
+function normalizeControlTarget(target: string): string {
+  return target.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function sectionNavigationHint(value: string): string | null {
+  const normalized = normalizeControlTarget(value);
+  for (const target of NAV_TARGET_PRIORITY.keys()) {
+    if (normalized.includes(target)) {
+      return target;
+    }
+  }
+  return null;
+}
+
+function crawlCandidateOptions(variant: AppMapVariant): TapCandidateOptions {
+  const preferredTarget = preferredNavigationTarget(variant);
+  const preferContent = preferredTarget !== null && preferredTarget !== 'home';
+  return {
+    preferContent,
+    excludeNavigation: preferContent,
+    skipCurrentNavigation: true
+  };
+}
+
+function preferredNavigationTarget(variant: AppMapVariant): string | null {
+  if (!hasBottomNavigation(variant)) {
+    return null;
+  }
+
+  const labels = contentLabels(variant);
+  if (labels.some((label) => label === 'feed' || label === 'investments' || label.includes('for you'))) {
+    return 'activity';
+  }
+  if (labels.some((label) => label.includes('starter investments'))) {
+    return 'starter';
+  }
+  if (labels.some((label) => label.includes('premium investments'))) {
+    return 'premium';
+  }
+  if (labels.some((label) => label.includes('leaderboard'))) {
+    return 'leaderboard';
+  }
+  if (
+    labels.some((label) =>
+      label.includes('three ways to get started') ||
+      label === 'deposit' ||
+      label.includes('explore popular creators') ||
+      label === 'settings' ||
+      label === 'notifications'
+    )
+  ) {
+    return 'home';
+  }
+  return null;
+}
+
+function hasBottomNavigation(variant: AppMapVariant): boolean {
+  const labels = new Set(
+    variant.elements
+      .filter((element) => isLikelyTapElement(element))
+      .flatMap((element) => element.labels.map(normalizeControlTarget))
+  );
+  return ['home', 'starter', 'premium'].every((target) => labels.has(target) || labels.has(`${target} ${target}`));
+}
+
+function contentLabels(variant: AppMapVariant): string[] {
+  return variant.elements.flatMap((element) =>
+    element.labels
+      .filter((label) => !isGlobalIdentityLabel(label, element))
+      .map(normalizeControlTarget)
+  );
+}
+
+function currentScreenTapArgs(variant: AppMapVariant, descriptor: TargetDescriptor): Record<string, unknown> | null {
+  if (descriptor.kind === 'section-first') {
+    return sectionFirstTapArgs(variant, descriptor);
+  }
+
+  for (const element of variant.elements) {
+    if (!elementContainsTarget(element, descriptor)) {
+      continue;
+    }
+    if (!(element.safety === 'safe' && element.stable && isLikelyTapElement(element))) {
+      continue;
+    }
+
+    const coordinateArgs = coordinateArgsForElement(element);
+    if (coordinateArgs) {
+      return coordinateArgs;
+    }
+  }
+
+  return null;
+}
+
+function sectionFirstTapArgs(variant: AppMapVariant, descriptor: TargetDescriptor): Record<string, unknown> | null {
+  const element = firstItemInSection(variant, descriptor);
+  return element ? coordinateArgsForElement(element) : null;
+}
+
+function firstItemInSection(variant: AppMapVariant, descriptor: TargetDescriptor): SourceElement | null {
+  const value = descriptor.value ?? descriptor.target ?? '';
+  if (!/[a-z]/i.test(value)) {
+    return null;
+  }
+
+  const section = sectionHeadingElement(variant, value);
+  if (!section || section.y === null || section.height === null) {
+    return null;
+  }
+
+  const sectionY = section.y;
+  const sectionBottom = sectionY + Math.max(0, section.height);
+  const nextSectionY = variant.elements
+    .filter(
+      (element) =>
+        element !== section &&
+        element.y !== null &&
+        element.y > sectionY &&
+        isLikelySectionHeading(element)
+    )
+    .map((element) => element.y as number)
+    .sort((left, right) => left - right)[0] ?? null;
+
+  const candidates = variant.elements
+    .filter(
+      (element) =>
+        isSectionItemCandidate(element, value) &&
+        element.y !== null &&
+        element.y > sectionBottom &&
+        (nextSectionY === null || element.y < nextSectionY)
+    )
+    .sort((left, right) => (left.y ?? 0) - (right.y ?? 0) || (left.x ?? 0) - (right.x ?? 0));
+
+  return candidates[0] ?? null;
+}
+
+function sectionHeadingElement(variant: AppMapVariant, value: string): SourceElement | null {
+  const matches = variant.elements
+    .filter(
+      (element) =>
+        element.visible !== false &&
+        element.y !== null &&
+        element.height !== null &&
+        elementLabelMatchesValue(element, value)
+    )
+    .sort((left, right) => (left.y ?? 0) - (right.y ?? 0) || (left.x ?? 0) - (right.x ?? 0));
+
+  return matches[0] ?? null;
+}
+
+function isSectionItemCandidate(element: SourceElement, sectionValue: string): boolean {
+  if (!(element.safety === 'safe' && element.stable && isLikelyTapElement(element))) {
+    return false;
+  }
+  if (!coordinateArgsForElement(element)) {
+    return false;
+  }
+  if (isBackControl(element) || elementLabelMatchesValue(element, sectionValue)) {
+    return false;
+  }
+
+  const target = normalizeControlTarget(plainTapTargets(element)[0] ?? element.selector);
+  if (NAV_TARGET_PRIORITY.has(target) || target === 'see all') {
+    return false;
+  }
+
+  return true;
+}
+
+function isLikelySectionHeading(element: SourceElement): boolean {
+  if (isHighValueContentCard(element)) {
+    return false;
+  }
+
+  const labels = element.labels.map(normalizeControlTarget);
+  if (labels.some((label) => label === 'see all' || NAV_TARGET_PRIORITY.has(label))) {
+    return false;
+  }
+
+  return labels.some(
+    (label) =>
+      /^top .*(investors|portfolios)/.test(label) ||
+      /\b(starter|premium)\s+investments\b/.test(label) ||
+      /\b(investors|portfolios)\b/.test(label)
+  );
+}
+
+function elementLabelMatchesValue(element: SourceElement, value: string): boolean {
+  const normalizedValue = normalizeControlTarget(value);
+  if (!normalizedValue) {
+    return false;
+  }
+
+  return element.labels.some((label) => {
+    const normalizedLabel = normalizeControlTarget(label);
+    return (
+      normalizedLabel === normalizedValue ||
+      normalizedLabel.includes(normalizedValue) ||
+      label.split(/\n+/).some((line) => normalizeControlTarget(line) === normalizedValue)
+    );
+  });
+}
+
+function coordinateArgsForElement(element: SourceElement): Record<string, unknown> | null {
+  if (
+    element.x === null ||
+    element.y === null ||
+    element.width === null ||
+    element.height === null ||
+    element.width <= 0 ||
+    element.height <= 0
+  ) {
+    return null;
+  }
+
+  if (isBackControl(element)) {
+    return {
+      x: Math.round(element.x + Math.min(40, element.width / 2)),
+      y: Math.round(element.y + element.height / 2)
+    };
+  }
+
+  return {
+    x: Math.round(element.x + element.width / 2),
+    y: Math.round(element.y + element.height / 2)
+  };
+}
+
+function isBackControl(element: SourceElement): boolean {
+  if (!element.tag.toLowerCase().includes('button')) {
+    return false;
+  }
+
+  return element.labels.some((label) =>
+    label.split(/\n+/).some((line) => line.trim().toLowerCase() === 'back')
+  );
+}
+
+function plainTapTargets(element: SourceElement): string[] {
+  return element.targets
+    .filter((target) => !target.includes('='))
+    .sort((left, right) => tapTargetScore(left) - tapTargetScore(right));
+}
+
+function tapTargetScore(target: string): number {
+  let score = target.length;
+  if (target.includes('\n')) {
+    score += 1000;
+  }
+  return score;
+}
+
+function isLikelyTapElement(element: SourceElement): boolean {
+  if (element.enabled === false || element.visible === false) {
+    return false;
+  }
+  if (
+    element.width !== null &&
+    element.height !== null &&
+    (element.width <= 0 || element.height <= 0)
+  ) {
+    return false;
+  }
+
+  const tag = element.tag.toLowerCase();
+  if (
+    tag.includes('statictext') ||
+    tag.includes('image') ||
+    tag.includes('textfield') ||
+    tag.includes('scrollview')
+  ) {
+    return false;
+  }
+
+  if (tag.includes('button') || element.clickable) {
+    return true;
+  }
+
+  if (tag.includes('other')) {
+    const width = element.width ?? 0;
+    const height = element.height ?? 0;
+    return width >= 20 && height >= 20 && element.labels.length > 0;
+  }
+
+  return false;
 }
 
 async function repairToTarget(
@@ -837,15 +1673,18 @@ async function repairToTarget(
 
       const attemptsForVariant = attemptedTargets.get(cursor.variant.id) ?? new Set<string>();
       attemptedTargets.set(cursor.variant.id, attemptsForVariant);
-      const target = safeTapTargets(cursor.variant).find(
-        (candidate) => !blockedTargets.has(candidate) && !attemptsForVariant.has(candidate)
+      const candidate = safeTapCandidates(cursor.variant).find(
+        (tapCandidate) =>
+          !blockedTargets.has(tapCandidate.target) &&
+          !blockedTargets.has(tapCandidate.key) &&
+          !attemptsForVariant.has(tapCandidate.key)
       );
-      if (!target) {
+      if (!candidate) {
         return { found: false, current: cursor, route: routeSoFar, remainingDepth: depthLeft };
       }
 
-      attemptsForVariant.add(target);
-      const args = { target };
+      attemptsForVariant.add(candidate.key);
+      const args = candidate.args;
       let observed: ObservedVariant;
       try {
         await context.adapter.tap(args);
@@ -860,10 +1699,15 @@ async function repairToTarget(
       }
 
       recordEdgeSuccess(context, cursor.variant, observed.variant, 'tap', args, true);
-      const nextRoute = [...routeSoFar, summarizeControl('tap', target, 0.45)];
+      const nextRoute = [...routeSoFar, summarizeControl('tap', candidate.target, 0.45)];
       const nested = await attemptFrom(observed, depthLeft - 1, nextRoute);
       if (nested.found) {
         return nested;
+      }
+      if (nested.current.variant.id === cursor.variant.id) {
+        cursor = nested.current;
+        routeSoFar = nested.route;
+        continue;
       }
 
       cursor = nested.current;
@@ -893,81 +1737,300 @@ export async function runMappedCommand(
     path: context.filePath
   };
 
-  if (descriptor.kind === 'unknown' || descriptor.kind === 'coordinate') {
+  if (descriptor.kind === 'unknown') {
     const details = await context.adapter[command](args);
     return { ...details, map: metadata };
   }
 
   let before = await observeCurrentScreen(context);
-  if (!variantContainsTarget(before.variant, descriptor)) {
+  if (descriptor.kind === 'coordinate') {
+    const details = await context.adapter[command](args);
+    const after = await observeCurrentScreen(context);
+    assertObservedEffect(command, args, before, after, descriptor);
+    recordEdgeSuccess(context, before.variant, after.variant, command, args, false);
+    return { ...details, map: metadata };
+  }
+
+  let liveTargetVisible = await liveContainsTarget(context, descriptor);
+  if (!variantContainsTarget(before.variant, descriptor) && !liveTargetVisible) {
     if (before.variant.auth_required) {
       throw new Error(`Target '${descriptor.target ?? descriptor.value}' requires authentication from the current screen`);
     }
 
-    const route = planRoute(context.map, before.variant.id, descriptor);
-    if (route.ambiguous) {
-      throw new Error(`Target '${descriptor.target ?? descriptor.value}' is ambiguous in the app map`);
-    }
-    if (route.authRequired) {
-      throw new Error(`Target '${descriptor.target ?? descriptor.value}' is behind an auth-required screen`);
-    }
-    if (route.edges.length > 0) {
-      context.summary.used = true;
-      metadata.routed = true;
-      metadata.route = route.edges.map(summarizeEdge);
-      const driven = await driveRoute(context, before, route.edges);
-      before = driven.current;
-      if (driven.failedEdge) {
+    if (routeableDescriptor(descriptor)) {
+      const route = planRoute(context.map, before.variant.id, descriptor);
+      if (route.ambiguous) {
+        throw new Error(`Target '${descriptor.target ?? descriptor.value}' is ambiguous in the app map`);
+      }
+      if (route.authRequired) {
+        throw new Error(`Target '${descriptor.target ?? descriptor.value}' is behind an auth-required screen`);
+      }
+      if (route.edges.length > 0) {
+        context.summary.used = true;
+        metadata.routed = true;
+        metadata.route = route.edges.map(summarizeEdge);
+        const driven = await driveRoute(context, before, route.edges);
+        before = driven.current;
+        liveTargetVisible = await liveContainsTarget(context, descriptor);
+        const targetReachedDespiteStaleContract = variantContainsTarget(before.variant, descriptor) || liveTargetVisible;
+        if (driven.failedEdge && !targetReachedDespiteStaleContract) {
+          if (!context.options.repair) {
+            throw new Error(
+              `Cached app-map route for '${driven.failedEdge.target ?? driven.failedEdge.command}' failed; rerun with repair enabled to explore an alternate route`
+            );
+          }
+          const repair = await repairToTarget(
+            context,
+            before,
+            descriptor,
+            context.options.repairDepth,
+            Date.now() + context.options.repairTimeoutMs,
+            new Set(driven.failedEdge.target ? [driven.failedEdge.target] : [])
+          );
+          if (!repair) {
+            throw new Error(
+              `Cached app-map route for '${driven.failedEdge.target ?? driven.failedEdge.command}' could not be repaired within the bounded repair budget`
+            );
+          }
+          context.summary.repaired = true;
+          context.summary.repairs += 1;
+          metadata.repaired = true;
+          metadata.repairs = context.summary.repairs;
+          metadata.route = [...(metadata.route as MapRouteStep[]), ...repair.route];
+          before = repair.current;
+          liveTargetVisible = await liveContainsTarget(context, descriptor);
+        }
+      } else if (context.options.repair) {
         const repair = await repairToTarget(
           context,
           before,
           descriptor,
           context.options.repairDepth,
           Date.now() + context.options.repairTimeoutMs,
-          new Set(driven.failedEdge.target ? [driven.failedEdge.target] : [])
+          new Set()
         );
-        if (!repair) {
-          throw new Error(
-            `Cached app-map route for '${driven.failedEdge.target ?? driven.failedEdge.command}' could not be repaired within the bounded repair budget`
-          );
+        if (repair) {
+          context.summary.used = true;
+          context.summary.repaired = true;
+          context.summary.repairs += 1;
+          metadata.routed = repair.route.length > 0;
+          metadata.repaired = true;
+          metadata.repairs = context.summary.repairs;
+          metadata.route = repair.route;
+          before = repair.current;
+          liveTargetVisible = await liveContainsTarget(context, descriptor);
         }
-        context.summary.repaired = true;
-        context.summary.repairs += 1;
-        metadata.repaired = true;
-        metadata.repairs = context.summary.repairs;
-        metadata.route = [...(metadata.route as MapRouteStep[]), ...repair.route];
-        before = repair.current;
-      }
-    } else {
-      const repair = await repairToTarget(
-        context,
-        before,
-        descriptor,
-        context.options.repairDepth,
-        Date.now() + context.options.repairTimeoutMs,
-        new Set()
-      );
-      if (repair) {
-        context.summary.used = true;
-        context.summary.repaired = true;
-        context.summary.repairs += 1;
-        metadata.routed = repair.route.length > 0;
-        metadata.repaired = true;
-        metadata.repairs = context.summary.repairs;
-        metadata.route = repair.route;
-        before = repair.current;
       }
     }
   }
 
-  if (!variantContainsTarget(before.variant, descriptor)) {
+  if (!variantContainsTarget(before.variant, descriptor) && !liveTargetVisible) {
     throw new Error(`Target '${descriptor.target ?? descriptor.value}' is not reachable from the current app-map state`);
   }
 
-  const details = await context.adapter[command](args);
+  const executableArgs =
+    command === 'tap' && !liveTargetVisible
+      ? currentScreenTapArgs(before.variant, descriptor) ?? args
+      : args;
+  const details = await context.adapter[command](executableArgs);
   const after = await observeCurrentScreen(context);
-  recordEdgeSuccess(context, before.variant, after.variant, command, args, false);
+  assertObservedEffect(command, executableArgs, before, after, descriptor);
+  recordEdgeSuccess(context, before.variant, after.variant, command, executableArgs, false);
   return { ...details, map: metadata };
+}
+
+async function restoreToVariant(
+  context: AppMapContext,
+  current: ObservedVariant,
+  target: ObservedVariant
+): Promise<ObservedVariant> {
+  if (current.variant.id === target.variant.id) {
+    return current;
+  }
+
+  const restoreTargets = safeTapCandidates(current.variant).filter((candidate) =>
+    /^(back|close|dismiss|done)$/i.test(candidate.target)
+  );
+
+  for (const restoreCandidate of restoreTargets) {
+    try {
+      const args = restoreCandidate.args;
+      await context.adapter.tap(args);
+      let observed = await observeCurrentScreen(context);
+      if (observed.variant.id !== target.variant.id) {
+        try {
+          await delay(400);
+          const settled = await observeCurrentScreen(context);
+          if (settled.observation.fingerprint !== observed.observation.fingerprint) {
+            observed = settled;
+          }
+        } catch {
+          // Keep the immediate observation if a settle read fails.
+        }
+      }
+      recordEdgeSuccess(context, current.variant, observed.variant, 'tap', args, true);
+      if (observed.variant.id === target.variant.id) {
+        return observed;
+      }
+      current = observed;
+    } catch {
+      try {
+        current = await observeCurrentScreen(context);
+      } catch {
+        // Keep the last known screen and try the next restoration strategy.
+      }
+    }
+  }
+
+  const preferredTarget = preferredNavigationTarget(target.variant);
+  const targetRestoreCandidates = safeTapCandidates(current.variant).filter((candidate) => {
+    if (/^(back|close|dismiss|done)$/i.test(candidate.target)) {
+      return false;
+    }
+    const normalizedTarget = normalizeControlTarget(candidate.target);
+    if (preferredTarget) {
+      return normalizedTarget === preferredTarget;
+    }
+    if (isGlobalIdentityLabel(candidate.target)) {
+      return false;
+    }
+    const descriptor = targetDescriptor('tap', { target: candidate.target });
+    return descriptor.kind !== 'unknown' && variantContainsTarget(target.variant, descriptor);
+  });
+
+  for (const restoreCandidate of targetRestoreCandidates) {
+    try {
+      const args = restoreCandidate.args;
+      await context.adapter.tap(args);
+      let observed = await observeCurrentScreen(context);
+      if (observed.variant.id !== target.variant.id) {
+        try {
+          await delay(400);
+          const settled = await observeCurrentScreen(context);
+          if (settled.observation.fingerprint !== observed.observation.fingerprint) {
+            observed = settled;
+          }
+        } catch {
+          // Keep the immediate observation if a settle read fails.
+        }
+      }
+      recordEdgeSuccess(context, current.variant, observed.variant, 'tap', args, true);
+      if (observed.variant.id === target.variant.id) {
+        return observed;
+      }
+      current = observed;
+    } catch {
+      try {
+        current = await observeCurrentScreen(context);
+      } catch {
+        // Keep the last known screen and try the next restoration strategy.
+      }
+    }
+  }
+
+  try {
+    await context.adapter.act({ name: 'back' });
+    let observed = await observeCurrentScreen(context);
+    if (observed.variant.id !== target.variant.id) {
+      try {
+        await delay(400);
+        const settled = await observeCurrentScreen(context);
+        if (settled.observation.fingerprint !== observed.observation.fingerprint) {
+          observed = settled;
+        }
+      } catch {
+        // Keep the immediate observation if a settle read fails.
+      }
+    }
+    if (observed.variant.id === target.variant.id) {
+      return observed;
+    }
+    return observed;
+  } catch {
+    return current;
+  }
+}
+
+async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Promise<CrawlSummary> {
+  const visited = new Set<string>();
+  const attemptedTargets = new Map<string, Set<string>>();
+  let actions = 0;
+  let stoppedReason = 'complete';
+
+  const visit = async (origin: ObservedVariant, depth: number): Promise<ObservedVariant> => {
+    if (depth <= 0) {
+      return origin;
+    }
+    if (actions >= context.options.crawlLimit) {
+      stoppedReason = 'limit';
+      return origin;
+    }
+
+    visited.add(origin.variant.id);
+    const attemptsForVariant = attemptedTargets.get(origin.variant.id) ?? new Set<string>();
+    attemptedTargets.set(origin.variant.id, attemptsForVariant);
+    const candidates = safeTapCandidates(origin.variant, crawlCandidateOptions(origin.variant))
+      .filter((candidate) => !attemptsForVariant.has(candidate.key));
+    let current = origin;
+
+    for (const candidate of candidates) {
+      if (actions >= context.options.crawlLimit) {
+        stoppedReason = 'limit';
+        return current;
+      }
+      if (current.variant.id !== origin.variant.id) {
+        stoppedReason = 'restore_failed';
+        return current;
+      }
+
+      attemptsForVariant.add(candidate.key);
+      const args = candidate.args;
+      let observed: ObservedVariant;
+      try {
+        await context.adapter.tap(args);
+        actions += 1;
+        observed = await observeCurrentScreen(context);
+      } catch {
+        try {
+          current = await observeCurrentScreen(context);
+        } catch {
+          // Stay on the last known origin if a failed tap also prevents source capture.
+        }
+        continue;
+      }
+
+      recordEdgeSuccess(context, origin.variant, observed.variant, 'tap', args, true);
+      visited.add(observed.variant.id);
+
+      if (observed.variant.id !== origin.variant.id && depth > 1) {
+        const nestedCurrent = await visit(observed, depth - 1);
+        current = await restoreToVariant(context, nestedCurrent, origin);
+        if (current.variant.id !== origin.variant.id) {
+          stoppedReason = 'restore_failed';
+          return current;
+        }
+      } else {
+        current = observed.variant.id === origin.variant.id
+          ? observed
+          : await restoreToVariant(context, observed, origin);
+        if (current.variant.id !== origin.variant.id) {
+          stoppedReason = 'restore_failed';
+          return current;
+        }
+      }
+    }
+
+    return current;
+  };
+
+  await visit(start, context.options.crawlDepth);
+
+  return {
+    enabled: true,
+    actions,
+    variants: visited.size,
+    stopped_reason: stoppedReason
+  };
 }
 
 export async function discoverAppMap(
@@ -985,10 +2048,12 @@ export async function discoverAppMap(
 
   try {
     const observed = await observeCurrentScreen(context);
+    const crawl = context.options.crawl ? await crawlAppMap(context, observed) : undefined;
     const summary = persistAppMapContext(context);
     return {
       action: 'discover',
       map: summary,
+      ...(crawl ? { crawl } : {}),
       screen: {
         variant_id: observed.variant.id,
         screen_id: observed.variant.screen_id,
