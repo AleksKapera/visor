@@ -109,6 +109,8 @@ interface ResolvedMapOptions {
   crawl: boolean;
   crawlDepth: number;
   crawlLimit: number;
+  crawlSettleMs: number;
+  crawlSettlePollMs: number;
 }
 
 interface AppMapContext {
@@ -216,6 +218,11 @@ interface TapCandidateOptions {
   skipCurrentNavigation?: boolean;
 }
 
+interface ObserveAfterActionOptions {
+  settleMs?: number;
+  pollMs?: number;
+}
+
 interface NavigationControl {
   element: SourceElement;
   target: string;
@@ -256,6 +263,10 @@ const RISKY_WORDS = [
 
 const INPUT_WORDS = ['password', 'email', 'username', 'search', 'input', 'text field', 'textfield'];
 const AUTH_WORDS = ['login', 'log in', 'sign in', 'password', 'username', 'auth', 'authentication'];
+const DEFAULT_ACTION_SETTLE_MS = 400;
+const DEFAULT_ACTION_SETTLE_POLL_MS = 400;
+const DEFAULT_CRAWL_SETTLE_MS = 1500;
+const DEFAULT_CRAWL_SETTLE_POLL_MS = 300;
 
 function envNoMap(): boolean {
   const raw = process.env.VISOR_NO_MAP ?? process.env.VISOR_DISABLE_MAP;
@@ -273,8 +284,18 @@ function resolveOptions(platform: Platform, options?: MapExecutionOptions): Reso
     repair: options?.repair === true,
     crawl: options?.crawl === true,
     crawlDepth: options?.crawlDepth ?? 2,
-    crawlLimit: options?.crawlLimit ?? 24
+    crawlLimit: options?.crawlLimit ?? 24,
+    crawlSettleMs: nonNegativeNumber(options?.crawlSettleMs, DEFAULT_CRAWL_SETTLE_MS),
+    crawlSettlePollMs: positiveNumber(options?.crawlSettlePollMs, DEFAULT_CRAWL_SETTLE_POLL_MS)
   };
+}
+
+function nonNegativeNumber(value: unknown, defaultValue: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : defaultValue;
+}
+
+function positiveNumber(value: unknown, defaultValue: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : defaultValue;
 }
 
 function mapIdentity(platform: Platform, appId: string): string {
@@ -419,6 +440,16 @@ function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.trim() !== '')));
 }
 
+function isScrollableTag(tag: string): boolean {
+  const normalized = tag.toLowerCase();
+  return (
+    normalized.includes('scrollview') ||
+    normalized.includes('scroll') ||
+    normalized.includes('list') ||
+    normalized.includes('table')
+  );
+}
+
 function attrBool(attrs: Record<string, string>, key: string, defaultValue: boolean): boolean {
   const raw = attrs[key];
   if (raw === undefined) {
@@ -477,6 +508,21 @@ function isLikelyFormControl(tag: string, attrs: Record<string, string>): boolea
   ].some((word) => haystack.includes(word));
 }
 
+function structuralElementTarget(tag: string, attrs: Record<string, string>): string {
+  if (!isScrollableTag(tag)) {
+    return '';
+  }
+
+  return [
+    'scroll-container',
+    tag,
+    attrs.x ?? '',
+    attrs.y ?? '',
+    attrs.width ?? '',
+    attrs.height ?? ''
+  ].join('=');
+}
+
 function redactLabel(value: string): string {
   return value
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '<redacted-email>')
@@ -522,16 +568,18 @@ function extractElements(source: string): SourceElement[] {
       formControl ? '' : redactLabel(bodyText)
     ]));
     const id = attrs['resource-id'] ?? attrs.id ?? attrs.identifier ?? '';
+    const structuralTarget = structuralElementTarget(tag, attrs);
     const targets = unique([
       ...rawLabels,
       ...rawLabels.map((label) => `text=${label}`),
-      id ? `id=${id}` : ''
+      id ? `id=${id}` : '',
+      structuralTarget
     ]);
     if (targets.length === 0) {
       continue;
     }
 
-    const stable = Boolean(rawLabels.length > 0 || id);
+    const stable = Boolean(rawLabels.length > 0 || id || structuralTarget);
     const selector = id ? `id=${id}` : rawLabels[0] ?? targets[0];
     elements.push({
       tag,
@@ -608,7 +656,7 @@ function identityKeys(elements: SourceElement[], includeStatic: boolean): string
 
 function isStaticIdentityElement(element: SourceElement): boolean {
   const tag = element.tag.toLowerCase();
-  return element.safety === 'unknown' || tag.includes('statictext') || tag.includes('image') || tag.includes('scrollview');
+  return element.safety === 'unknown' || tag.includes('statictext') || tag.includes('image') || isScrollableTag(tag);
 }
 
 function screenSimilarity(left: SourceElement[], right: SourceElement[]): number {
@@ -665,6 +713,8 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
   let bestScore = 0;
   const observedNavigationTarget = preferredNavigationTargetForElements(observation.elements);
   const observedHasBottomNavigation = navigationControlsForElements(observation.elements).length >= 2;
+  const observedHasScrollableSurface = elementsHaveScrollableSurface(observation.elements);
+  const observedControlKeys = identityKeys(observation.elements, false);
 
   for (const variant of map.variants) {
     const variantNavigationTarget = preferredNavigationTarget(variant);
@@ -674,6 +724,15 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
       observedNavigationTarget !== variantNavigationTarget
     ) {
       continue;
+    }
+    if (observedHasScrollableSurface || hasScrollableSurface(variant)) {
+      const variantControlKeys = identityKeys(variant.elements, false);
+      if (
+        (observedControlKeys.length > 0 || variantControlKeys.length > 0) &&
+        similarity(observedControlKeys, variantControlKeys) < 0.3
+      ) {
+        continue;
+      }
     }
     const score =
       variant.normalized_fingerprint === observation.normalized_fingerprint
@@ -685,7 +744,12 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
     }
   }
 
-  const requiredScore = observedHasBottomNavigation || (best ? hasBottomNavigation(best) : false) ? 0.62 : 0.45;
+  const requiredScore =
+    observedHasBottomNavigation || (best ? hasBottomNavigation(best) : false)
+      ? 0.62
+      : observedHasScrollableSurface || (best ? hasScrollableSurface(best) : false)
+        ? 0.62
+        : 0.45;
   if (!best || bestScore < requiredScore) {
     return {
       observation,
@@ -735,7 +799,7 @@ function isTransientObservation(observation: ScreenObservation): boolean {
   return observation.elements.length === 0 || observation.element_keys.length === 0;
 }
 
-async function observeCurrentScreen(context: AppMapContext): Promise<ObservedVariant> {
+async function captureCurrentObservation(context: AppMapContext): Promise<ScreenObservation> {
   let observation: ScreenObservation | null = null;
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -747,14 +811,23 @@ async function observeCurrentScreen(context: AppMapContext): Promise<ObservedVar
     await delay(500);
   }
 
-  const observed = upsertVariant(context.map, observation ?? observeSource(''));
+  return observation ?? observeSource('');
+}
+
+function observeScreenObservation(context: AppMapContext, observation: ScreenObservation): ObservedVariant {
+  const observed = upsertVariant(context.map, observation);
   context.changed = true;
   return observed;
 }
 
+async function observeCurrentScreen(context: AppMapContext): Promise<ObservedVariant> {
+  return observeScreenObservation(context, await captureCurrentObservation(context));
+}
+
 async function observeAfterAction(
   context: AppMapContext,
-  target?: ObservedVariant
+  target?: ObservedVariant,
+  options: ObserveAfterActionOptions = {}
 ): Promise<ObservedVariant> {
   const observed = await observeCurrentScreen(context);
   if (target && restoreMatch(observed, target)) {
@@ -764,20 +837,119 @@ async function observeAfterAction(
     return observed;
   }
 
-  try {
-    await delay(400);
-    const settled = await observeCurrentScreen(context);
-    if (target && restoreMatch(settled, target)) {
-      return settled;
+  const settleMs = nonNegativeNumber(options.settleMs, DEFAULT_ACTION_SETTLE_MS);
+  if (settleMs === 0) {
+    return observed;
+  }
+  const pollMs = positiveNumber(options.pollMs, DEFAULT_ACTION_SETTLE_POLL_MS);
+  let best = observed;
+  let previous = observed;
+  let elapsed = 0;
+
+  while (elapsed < settleMs) {
+    const waitMs = Math.min(pollMs, settleMs - elapsed);
+    await settleDelay(context, waitMs);
+    elapsed += waitMs;
+
+    let next: ObservedVariant;
+    try {
+      next = await observeCurrentScreen(context);
+    } catch {
+      return best;
     }
-    if (settled.observation.fingerprint !== observed.observation.fingerprint) {
-      return settled;
+
+    if (target && restoreMatch(next, target)) {
+      return next;
     }
-  } catch {
-    // Keep the immediate observation if a settle read fails.
+    if (isRicherObservation(next.observation, best.observation)) {
+      best = next;
+    }
+
+    if (next.observation.fingerprint === previous.observation.fingerprint && !shouldSettleObservation(next.observation)) {
+      return isRicherObservation(next.observation, best.observation) ? next : best;
+    }
+
+    previous = next;
   }
 
-  return observed;
+  return best;
+}
+
+async function observeAfterCrawlAction(context: AppMapContext): Promise<ObservedVariant> {
+  const observation = await captureCurrentObservation(context);
+  const settled = await settleCrawlObservation(context, observation);
+  return observeScreenObservation(context, settled);
+}
+
+async function settleCrawlObservation(
+  context: AppMapContext,
+  observation: ScreenObservation
+): Promise<ScreenObservation> {
+  const settleMs = context.options.crawlSettleMs;
+  if (settleMs === 0) {
+    return observation;
+  }
+
+  const pollMs = context.options.crawlSettlePollMs;
+  let best = observation;
+  let previous = observation;
+  let elapsed = 0;
+
+  while (elapsed < settleMs) {
+    const waitMs = Math.min(pollMs, settleMs - elapsed);
+    await settleDelay(context, waitMs);
+    elapsed += waitMs;
+
+    let next: ScreenObservation;
+    try {
+      next = await captureCurrentObservation(context);
+    } catch {
+      return best;
+    }
+
+    if (isRicherObservation(next, best)) {
+      best = next;
+    }
+    if (next.fingerprint === previous.fingerprint && !shouldSettleObservation(next)) {
+      return isRicherObservation(next, best) ? next : best;
+    }
+
+    previous = next;
+  }
+
+  return best;
+}
+
+async function settleDelay(context: AppMapContext, ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+
+  try {
+    await context.adapter.wait({ ms, label: 'app-map-settle' });
+  } catch {
+    await delay(ms);
+  }
+}
+
+function isRicherObservation(candidate: ScreenObservation, current: ScreenObservation): boolean {
+  if (isTransientObservation(current) && !isTransientObservation(candidate)) {
+    return true;
+  }
+  if (isTransientObservation(candidate)) {
+    return false;
+  }
+
+  const candidateScore = observationRichness(candidate);
+  const currentScore = observationRichness(current);
+  return candidateScore > currentScore;
+}
+
+function observationRichness(observation: ScreenObservation): number {
+  const stableControls = observation.elements.filter(
+    (element) => element.stable && element.visible !== false && element.safety === 'safe'
+  ).length;
+  return observation.element_keys.length + observation.elements.length * 2 + stableControls * 3;
 }
 
 function shouldSettleObservation(observation: ScreenObservation): boolean {
@@ -1408,6 +1580,16 @@ function restoreMatch(observed: ObservedVariant, target: ObservedVariant): Resto
   if (observedNavigationTarget && targetNavigationTarget && observedNavigationTarget !== targetNavigationTarget) {
     return null;
   }
+  if (hasScrollableSurface(observed.variant) || hasScrollableSurface(target.variant)) {
+    const observedControlKeys = identityKeys(observed.variant.elements, false);
+    const targetControlKeys = identityKeys(target.variant.elements, false);
+    if (
+      (observedControlKeys.length > 0 || targetControlKeys.length > 0) &&
+      similarity(observedControlKeys, targetControlKeys) < 0.3
+    ) {
+      return null;
+    }
+  }
 
   const contract = {
     variant_id: target.variant.id,
@@ -1584,6 +1766,65 @@ function crawlCandidateOptions(variant: AppMapVariant): TapCandidateOptions {
     excludeNavigation: preferContent,
     skipCurrentNavigation: true
   };
+}
+
+function crawlScrollCandidates(context: AppMapContext, variant: AppMapVariant): TapCandidate[] {
+  if (!context.adapter.capability().commands.includes('scroll') || !shouldExploreScroll(variant)) {
+    return [];
+  }
+
+  const args = { direction: 'down', percent: 70 };
+  return [
+    {
+      target: scrollTarget(args),
+      args,
+      key: 'scroll:down:70'
+    }
+  ];
+}
+
+function shouldExploreScroll(variant: AppMapVariant): boolean {
+  return hasScrollableSurface(variant) || hasBottomReachableContent(variant);
+}
+
+function hasScrollableSurface(variant: AppMapVariant): boolean {
+  return elementsHaveScrollableSurface(variant.elements);
+}
+
+function elementsHaveScrollableSurface(elements: SourceElement[]): boolean {
+  return elements.some((element) => isScrollableTag(element.tag));
+}
+
+function hasBottomReachableContent(variant: AppMapVariant): boolean {
+  const content = scrollProbeElements(variant);
+  if (content.length < 3) {
+    return false;
+  }
+
+  const navControls = navigationControls(variant);
+  const navTop = navControls
+    .map((control) => control.element.y)
+    .filter((value): value is number => value !== null)
+    .sort((left, right) => left - right)[0] ?? null;
+  if (navTop === null) {
+    return false;
+  }
+  const viewportBottom = navTop ?? Math.max(...content.map((element) => (element.y ?? 0) + (element.height ?? 0)));
+  return content.some((element) => ((element.y ?? 0) + (element.height ?? 0)) >= viewportBottom - 48);
+}
+
+function scrollProbeElements(variant: AppMapVariant): SourceElement[] {
+  const navigationElements = new Set(navigationControls(variant).map((control) => control.element));
+  return variant.elements.filter((element) => {
+    if (element.visible === false || element.y === null || element.height === null || navigationElements.has(element)) {
+      return false;
+    }
+    if (isBackControl(element)) {
+      return false;
+    }
+    const tag = element.tag.toLowerCase();
+    return !isScrollableTag(tag);
+  });
 }
 
 function preferredNavigationTarget(variant: AppMapVariant): string | null {
@@ -1910,7 +2151,7 @@ function isLikelyTapElement(element: SourceElement): boolean {
     tag.includes('statictext') ||
     tag.includes('image') ||
     tag.includes('textfield') ||
-    tag.includes('scrollview')
+    isScrollableTag(tag)
   ) {
     return false;
   }
@@ -2201,6 +2442,35 @@ async function tryTapRestoreCandidate(
   }
 }
 
+async function tryScrollRestoreCandidate(
+  context: AppMapContext,
+  current: ObservedVariant,
+  target: ObservedVariant,
+  candidate: TapCandidate,
+  diagnostic: RestoreDiagnostic
+): Promise<{ current: ObservedVariant; match: RestoreMatch | null }> {
+  const args = candidate.args;
+  try {
+    await context.adapter.scroll(args);
+    const observed = await observeAfterAction(context, target);
+    recordEdgeSuccess(context, current.variant, observed.variant, 'scroll', args, true);
+    const match = restoreMatch(observed, target);
+    diagnostic.attempts.push(
+      restoreAttemptDiagnostic('reverse-scroll', match ? 'matched' : 'mismatched', observed, match, candidate.target, 'scroll')
+    );
+    return { current: observed, match };
+  } catch (error) {
+    diagnostic.attempts.push(
+      restoreAttemptDiagnostic('reverse-scroll', 'error', undefined, null, candidate.target, 'scroll', error)
+    );
+    try {
+      return { current: await observeCurrentScreen(context), match: null };
+    } catch {
+      return { current, match: null };
+    }
+  }
+}
+
 function targetRestoreCandidates(current: ObservedVariant, target: ObservedVariant): TapCandidate[] {
   const preferredTarget = preferredNavigationTarget(target.variant);
   return safeTapCandidates(current.variant).filter((candidate) => {
@@ -2217,6 +2487,35 @@ function targetRestoreCandidates(current: ObservedVariant, target: ObservedVaria
     const descriptor = targetDescriptor('tap', { target: candidate.target });
     return descriptor.kind !== 'unknown' && variantContainsTarget(target.variant, descriptor);
   });
+}
+
+function reverseScrollRestoreCandidates(current: ObservedVariant, target: ObservedVariant): TapCandidate[] {
+  if (!shouldTryReverseScrollRestore(current.variant, target.variant)) {
+    return [];
+  }
+
+  const args = { direction: 'up', percent: 70 };
+  return [
+    {
+      target: scrollTarget(args),
+      args,
+      key: 'scroll:up:70'
+    }
+  ];
+}
+
+function shouldTryReverseScrollRestore(current: AppMapVariant, target: AppMapVariant): boolean {
+  if (hasScrollableSurface(current) || hasScrollableSurface(target)) {
+    return true;
+  }
+
+  const currentNavigationTarget = preferredNavigationTarget(current);
+  const targetNavigationTarget = preferredNavigationTarget(target);
+  if (currentNavigationTarget && targetNavigationTarget && currentNavigationTarget === targetNavigationTarget) {
+    return true;
+  }
+
+  return similarity(current.element_keys, target.element_keys) >= 0.2;
 }
 
 function navigationResetCandidates(current: ObservedVariant, root: ObservedVariant): TapCandidate[] {
@@ -2371,6 +2670,16 @@ async function restoreToVariant(
     }
   }
 
+  for (const restoreCandidate of reverseScrollRestoreCandidates(current, target)) {
+    const restored = await tryScrollRestoreCandidate(context, current, target, restoreCandidate, diagnostic);
+    current = restored.current;
+    if (restored.match) {
+      diagnostic.result = 'restored';
+      diagnostic.accepted_by = restored.match.acceptedBy;
+      return { current: target, restored: true, acceptedBy: restored.match.acceptedBy, diagnostic };
+    }
+  }
+
   try {
     await context.adapter.act({ name: 'back' });
     const observed = await observeAfterAction(context, target);
@@ -2422,7 +2731,7 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
     }
   };
 
-  const visit = async (origin: ObservedVariant, depth: number): Promise<ObservedVariant> => {
+  const visit = async (origin: ObservedVariant, depth: number, allowScrollFirst = true): Promise<ObservedVariant> => {
     if (depth <= 0) {
       return origin;
     }
@@ -2437,6 +2746,88 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
     const candidates = safeTapCandidates(origin.variant, crawlCandidateOptions(origin.variant))
       .filter((candidate) => !attemptsForVariant.has(candidate.key));
     let current = origin;
+
+    const exploreScrollCandidates = async (scrollCandidatesToExplore: TapCandidate[]): Promise<boolean> => {
+      for (const candidate of scrollCandidatesToExplore) {
+        if (actions >= context.options.crawlLimit) {
+          stoppedReason = 'limit';
+          return true;
+        }
+        if (!restoreMatch(current, origin)) {
+          if (restoreMatch(current, start)) {
+            markPartial();
+            current = start;
+            return true;
+          }
+          stoppedReason = 'restore_failed';
+          return true;
+        }
+        current = origin;
+
+        attemptsForVariant.add(candidate.key);
+        const args = candidate.args;
+        let observed: ObservedVariant;
+        try {
+          await context.adapter.scroll(args);
+          actions += 1;
+          observed = await observeAfterCrawlAction(context);
+        } catch {
+          try {
+            current = await observeCurrentScreen(context);
+          } catch {
+            // Stay on the last known origin if a failed scroll also prevents source capture.
+          }
+          continue;
+        }
+
+        if (observed.variant.id === origin.variant.id || observed.observation.fingerprint === origin.observation.fingerprint) {
+          current = origin;
+          continue;
+        }
+
+        recordEdgeSuccess(context, origin.variant, observed.variant, 'scroll', args, true);
+        visited.add(observed.variant.id);
+
+        if (observed.variant.id !== origin.variant.id && depth > 1) {
+          const nestedCurrent = await visit(observed, depth - 1, false);
+          const restored = await restore(nestedCurrent, origin);
+          current = restored.current;
+          if (!restored.restored) {
+            if (restoreMatch(current, start)) {
+              markPartial();
+              current = start;
+              return true;
+            }
+            stoppedReason = 'restore_failed';
+            return true;
+          }
+        } else {
+          const restored = await restore(observed, origin);
+          current = restored.current;
+          if (!restored.restored) {
+            if (restoreMatch(current, start)) {
+              markPartial();
+              if (restoreMatch(origin, start)) {
+                current = origin;
+                continue;
+              }
+              current = start;
+              return true;
+            }
+            stoppedReason = 'restore_failed';
+            return true;
+          }
+        }
+      }
+
+      return false;
+    };
+
+    const scrollCandidates = crawlScrollCandidates(context, origin.variant)
+      .filter((candidate) => !attemptsForVariant.has(candidate.key));
+    if (allowScrollFirst && hasScrollableSurface(origin.variant) && await exploreScrollCandidates(scrollCandidates)) {
+      return current;
+    }
 
     for (const candidate of candidates) {
       if (actions >= context.options.crawlLimit) {
@@ -2459,7 +2850,7 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
       try {
         await context.adapter.tap(args);
         actions += 1;
-        observed = await observeAfterAction(context);
+        observed = await observeAfterCrawlAction(context);
       } catch {
         try {
           current = await observeCurrentScreen(context);
@@ -2502,6 +2893,12 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
           return current;
         }
       }
+    }
+
+    const remainingScrollCandidates = crawlScrollCandidates(context, origin.variant)
+      .filter((candidate) => !attemptsForVariant.has(candidate.key));
+    if (await exploreScrollCandidates(remainingScrollCandidates)) {
+      return current;
     }
 
     return current;

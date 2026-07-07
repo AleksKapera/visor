@@ -86,7 +86,9 @@ class ScreenGraphAdapter implements PlatformAdapter {
   }
 
   async wait(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    this.actions.push(`wait:${String(args.ms ?? '')}`);
+    if (args.label !== 'app-map-settle') {
+      this.actions.push(`wait:${String(args.ms ?? '')}`);
+    }
     return { action: 'wait', args };
   }
 
@@ -836,6 +838,86 @@ const settledDestinationCrawlGraph = {
   }
 };
 
+const hydratedDestinationCrawlGraph = {
+  home: {
+    source: tabbedSource('<StaticText name="Home Feed" label="Home Feed" />'),
+    coordinateTaps: { '168,807': 'catalog' },
+    taps: {}
+  },
+  catalog: {
+    source: [
+      tabbedSource('<StaticText name="Catalog Shell" label="Catalog Shell" />'),
+      tabbedSource(
+        '<StaticText name="Catalog Shell" label="Catalog Shell" />' +
+          '<Button name="Loaded Details" label="Loaded Details" />'
+      ),
+      tabbedSource(
+        '<StaticText name="Catalog Shell" label="Catalog Shell" />' +
+          '<Button name="Loaded Details" label="Loaded Details" />'
+      )
+    ],
+    coordinateTaps: { '57,807': 'home' },
+    taps: { 'Loaded Details': 'detail' }
+  },
+  detail: {
+    source: '<App><StaticText name="Loaded detail" label="Loaded detail" /></App>',
+    taps: {}
+  }
+};
+
+const scrollDiscoveryGraph = {
+  home: {
+    source:
+      '<App><XCUIElementTypeScrollView name="Product list" label="Product list" enabled="true" visible="true" x="0" y="120" width="390" height="640" />' +
+      '<StaticText name="Featured products" label="Featured products" x="20" y="590" width="240" height="28" /></App>',
+    scrolls: { down: 'more' },
+    taps: {}
+  },
+  more: {
+    source:
+      '<App><XCUIElementTypeScrollView name="Product list" label="Product list" enabled="true" visible="true" x="0" y="120" width="390" height="640" />' +
+      '<Button name="Hidden CTA" label="Hidden CTA" x="20" y="620" width="300" height="56" /></App>',
+    scrolls: { up: 'home' },
+    coordinateTaps: { '170,648': 'detail' },
+    taps: { 'Hidden CTA': 'detail' }
+  },
+  detail: {
+    source:
+      '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" />' +
+      '<StaticText name="Hidden CTA detail" label="Hidden CTA detail" /></App>',
+    coordinateTaps: { '40,90': 'more' },
+    taps: { Back: 'more' }
+  }
+};
+
+const scrollPriorityGraph = {
+  home: {
+    source:
+      '<App><XCUIElementTypeScrollView enabled="true" visible="true" x="0" y="120" width="390" height="640" />' +
+      '<Button name="Visible Card" label="Visible Card" x="20" y="220" width="300" height="56" /></App>',
+    scrolls: { down: 'more' },
+    coordinateTaps: { '170,248': 'visible-detail' },
+    taps: { 'Visible Card': 'visible-detail' }
+  },
+  more: {
+    source:
+      '<App><XCUIElementTypeScrollView enabled="true" visible="true" x="0" y="120" width="390" height="640" />' +
+      '<Button name="Hidden CTA" label="Hidden CTA" x="20" y="620" width="300" height="56" /></App>',
+    scrolls: { up: 'home' },
+    coordinateTaps: { '170,648': 'hidden-detail' },
+    taps: { 'Hidden CTA': 'hidden-detail' }
+  },
+  'visible-detail': {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /></App>',
+    coordinateTaps: { '40,90': 'home' },
+    taps: { Back: 'home' }
+  },
+  'hidden-detail': {
+    source: '<App><StaticText name="Hidden CTA detail" label="Hidden CTA detail" /></App>',
+    taps: {}
+  }
+};
+
 const sectionFirstDuplicateVariantGraph = {
   ...sectionFirstGraph,
   'starter-duplicate': {
@@ -1032,7 +1114,8 @@ describe('app map execution', () => {
       appId: 'com.example.crawl-filter',
       crawl: true,
       crawlDepth: 1,
-      crawlLimit: 4
+      crawlLimit: 4,
+      crawlSettleMs: 0
     };
 
     const adapter = new ScreenGraphAdapter(crawlCandidateFilterGraph);
@@ -1060,7 +1143,8 @@ describe('app map execution', () => {
       appId: 'com.example.bottom-nav-crawl',
       crawl: true,
       crawlDepth: 1,
-      crawlLimit: 2
+      crawlLimit: 2,
+      crawlSettleMs: 0
     };
 
     const adapter = new ScreenGraphAdapter(bottomNavCrawlGraph);
@@ -1093,7 +1177,8 @@ describe('app map execution', () => {
       appId: 'com.example.premium-investor-crawl',
       crawl: true,
       crawlDepth: 2,
-      crawlLimit: 4
+      crawlLimit: 4,
+      crawlSettleMs: 0
     };
 
     const discoveryAdapter = new ScreenGraphAdapter(premiumInvestorCrawlGraph);
@@ -1233,7 +1318,9 @@ describe('app map execution', () => {
       appId: 'com.example.settled-destination-crawl',
       crawl: true,
       crawlDepth: 1,
-      crawlLimit: 1
+      crawlLimit: 1,
+      crawlSettleMs: 1,
+      crawlSettlePollMs: 1
     };
 
     const adapter = new ScreenGraphAdapter(settledDestinationCrawlGraph);
@@ -1256,6 +1343,137 @@ describe('app map execution', () => {
     const labels = destination?.elements.flatMap((element) => element.labels) ?? [];
 
     expect(labels).toContain('Catalog Ready');
+  });
+
+  it('waits for generic destination hydration during crawl before recording edges', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.hydrated-destination-crawl',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 1,
+      crawlSettleMs: 1,
+      crawlSettlePollMs: 1
+    };
+
+    const adapter = new ScreenGraphAdapter(hydratedDestinationCrawlGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        actions: 1,
+        stopped_reason: 'limit'
+      }
+    });
+
+    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
+    const persisted = JSON.parse(fs.readFileSync(path.join(mapRoot, mapFile), 'utf8')) as {
+      variants: Array<{ id: string; elements: Array<{ labels: string[] }> }>;
+      edges: Array<{ target?: string; to_variant_id: string }>;
+    };
+    const catalogEdge = persisted.edges.find((edge) => edge.target === 'x=168,y=807');
+    const destination = persisted.variants.find((variant) => variant.id === catalogEdge?.to_variant_id);
+    const labels = destination?.elements.flatMap((element) => element.labels) ?? [];
+
+    expect(labels).toContain('Loaded Details');
+  });
+
+  it('discovers scroll-revealed controls and routes through the learned scroll edge', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.scroll-discovery',
+      crawl: true,
+      crawlDepth: 2,
+      crawlLimit: 2,
+      crawlSettleMs: 1,
+      crawlSettlePollMs: 1
+    };
+
+    const discoveryAdapter = new ScreenGraphAdapter(scrollDiscoveryGraph);
+    const discovery = await discoverAppMap(discoveryAdapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        actions: 2
+      }
+    });
+    expect(discoveryAdapter.actions).toEqual(
+      expect.arrayContaining(['scroll:down', 'tap:170,648', 'scroll:up'])
+    );
+
+    const routedAdapter = new ScreenGraphAdapter(scrollDiscoveryGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('Hidden CTA'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'scroll:down',
+      'source:more',
+      'tap:Hidden CTA',
+      'source:detail'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'scroll', target: 'scroll=down,percent=70' }]
+    });
+  });
+
+  it('prioritizes scroll discovery on scrollable screens before visible cards exhaust the crawl budget', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.scroll-priority',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 1,
+      crawlSettleMs: 1,
+      crawlSettlePollMs: 1
+    };
+
+    const discoveryAdapter = new ScreenGraphAdapter(scrollPriorityGraph);
+    const discovery = await discoverAppMap(discoveryAdapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        actions: 1,
+        stopped_reason: 'limit'
+      }
+    });
+    expect(discoveryAdapter.actions).toEqual(expect.arrayContaining(['scroll:down']));
+    expect(discoveryAdapter.actions).not.toContain('tap:170,248');
+
+    const routedAdapter = new ScreenGraphAdapter(scrollPriorityGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('Hidden CTA'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'scroll:down',
+      'source:more',
+      'tap:Hidden CTA',
+      'source:hidden-detail'
+    ]);
   });
 
   it('reuses learned bottom navigation destinations from a new tabbed screen variant', async () => {

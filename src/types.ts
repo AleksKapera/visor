@@ -111,6 +111,8 @@ export interface MapExecutionOptions {
   crawl?: boolean;
   crawlDepth?: number;
   crawlLimit?: number;
+  crawlSettleMs?: number;
+  crawlSettlePollMs?: number;
 }
 
 export interface AssertionResult {
