@@ -96,6 +96,10 @@ export interface MapExecutionOptions {
   appId?: string;
   repairDepth?: number;
   repairTimeoutMs?: number;
+  repair?: boolean;
+  crawl?: boolean;
+  crawlDepth?: number;
+  crawlLimit?: number;
 }
 
 export interface AssertionResult {

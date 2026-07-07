@@ -139,6 +139,43 @@ describe('cli app map options', () => {
     );
   });
 
+  it('passes repair opt-in through direct actions', async () => {
+    daemonMock.runDaemonAction.mockResolvedValue({
+      action: 'tap',
+      args: { target: 'Advanced' },
+      map: {
+        enabled: true,
+        used: false,
+        updated: false,
+        repaired: false,
+        repairs: 0
+      }
+    });
+
+    const result = await executeCommand([
+      'tap',
+      '--device',
+      'emulator-5554',
+      '--app-id',
+      'com.example.settings',
+      '--target',
+      'Advanced',
+      '--repair'
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(daemonMock.runDaemonAction).toHaveBeenCalledWith(
+      expect.any(Object),
+      'tap',
+      { target: 'Advanced' },
+      {
+        enabled: true,
+        appId: 'com.example.settings',
+        repair: true
+      }
+    );
+  });
+
   it('keeps disabled map metadata on no-map direct action failures', async () => {
     daemonMock.runDaemonAction.mockRejectedValue(
       new daemonMock.DaemonOperationError('target not visible on home: Advanced', {
@@ -249,6 +286,57 @@ describe('cli app map options', () => {
       {
         enabled: true,
         appId: 'com.example.settings'
+      }
+    );
+  });
+
+  it('passes crawl discovery options through discover', async () => {
+    daemonMock.runDaemonDiscover.mockResolvedValue({
+      action: 'discover',
+      map: {
+        enabled: true,
+        used: false,
+        updated: true,
+        repaired: false,
+        repairs: 0
+      },
+      crawl: {
+        enabled: true,
+        actions: 4
+      },
+      screen: {
+        variant_id: 'variant_1'
+      }
+    });
+
+    const result = await executeCommand([
+      'discover',
+      '--device',
+      'emulator-5554',
+      '--app-id',
+      'com.example.settings',
+      '--crawl',
+      '--crawl-depth',
+      '3',
+      '--crawl-limit',
+      '10'
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(result.response.data).toMatchObject({
+      crawl: {
+        enabled: true,
+        actions: 4
+      }
+    });
+    expect(daemonMock.runDaemonDiscover).toHaveBeenCalledWith(
+      expect.any(Object),
+      {
+        enabled: true,
+        appId: 'com.example.settings',
+        crawl: true,
+        crawlDepth: 3,
+        crawlLimit: 10
       }
     );
   });
