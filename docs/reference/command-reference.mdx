@@ -209,7 +209,11 @@ Response data fields:
 
 - `action`
 - `map`
+- `map.summary`, when the persisted map can be read
 - `screen`
+- `crawl`, when `--crawl` is used
+
+`map.summary` is a path-free inventory of the persisted app map for review: schema version, identity, app id, platform, screen count, variant count, edge count, authentication-required variant count, and last update time.
 
 ## Scenario commands
 

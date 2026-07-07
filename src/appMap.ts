@@ -135,6 +135,23 @@ interface PlannedRoute {
   edges: AppMapEdge[];
   ambiguous: boolean;
   authRequired: boolean;
+  diagnostics?: RoutePlanDiagnostics;
+}
+
+interface RoutePlanCandidateDiagnostic {
+  variant_id: string;
+  screen_id?: string;
+  score: number;
+  route: MapRouteStep[];
+  selected: boolean;
+  rejected_reason?: string;
+}
+
+interface RoutePlanDiagnostics {
+  target: string;
+  route_candidates: RoutePlanCandidateDiagnostic[];
+  selected_variant_id?: string;
+  ambiguous: boolean;
 }
 
 interface RouteDriveResult {
@@ -708,6 +725,10 @@ function targetDescriptor(command: CommandName, args: Record<string, unknown>): 
     }
   }
 
+  if (command === 'scroll') {
+    return { kind: 'stable', target: scrollTarget(args), confidence: 0.4 };
+  }
+
   const target = typeof args.target === 'string' ? args.target : undefined;
   if (!target) {
     return { kind: 'unknown', confidence: 0 };
@@ -739,6 +760,12 @@ function coordinateTarget(args: Record<string, unknown>): string {
   return args.normalized === true ? `${base},normalized=true` : base;
 }
 
+function scrollTarget(args: Record<string, unknown>): string {
+  const direction = String(args.direction ?? 'down').trim().toLowerCase() || 'down';
+  const percent = args.percent === undefined ? '' : `,percent=${String(args.percent)}`;
+  return `scroll=${direction}${percent}`;
+}
+
 function isValueBearingAction(command: CommandName, args: Record<string, unknown>): boolean {
   return command === 'act' && args.name === 'type' && args.value !== undefined;
 }
@@ -762,7 +789,8 @@ function elementContainsTarget(element: SourceElement, descriptor: TargetDescrip
     return true;
   }
   if (descriptor.kind === 'text-contains') {
-    return element.labels.some((label) => label.includes(value));
+    const normalizedValue = normalizeControlTarget(value);
+    return element.labels.some((label) => normalizeControlTarget(label).includes(normalizedValue));
   }
   return element.labels.some((label) => label === value);
 }
@@ -895,18 +923,55 @@ function planRoute(map: AppMapFile, fromVariantId: string, descriptor: TargetDes
       return { edges: [], ambiguous: false, authRequired: false };
     }
     const tiedBest = rankedRoutes.filter((route) => route.score === best.score);
-    if (
+    const ambiguous =
       (descriptor.kind === 'text' || descriptor.kind === 'text-contains' || descriptor.kind === 'section-first') &&
-      tiedBest.length > 1
+      tiedBest.length > 1;
+    const diagnostics = routePlanDiagnostics(map, descriptor, rankedRoutes, ambiguous ? undefined : best, ambiguous);
+    if (
+      ambiguous
     ) {
-      return { edges: [], ambiguous: true, authRequired: false };
+      return { edges: [], ambiguous: true, authRequired: false, diagnostics };
     }
     const route = best;
     const destination = map.variants.find((variant) => variant.id === route?.variantId);
-    return { edges: route?.edges ?? [], ambiguous: false, authRequired: Boolean(destination?.auth_required) };
+    return {
+      edges: route?.edges ?? [],
+      ambiguous: false,
+      authRequired: Boolean(destination?.auth_required),
+      diagnostics
+    };
   }
 
   return { edges: [], ambiguous: false, authRequired: destinations.some((variant) => variant.auth_required) };
+}
+
+function routePlanDiagnostics(
+  map: AppMapFile,
+  descriptor: TargetDescriptor,
+  rankedRoutes: Array<{ variantId: string; edges: AppMapEdge[]; score: number }>,
+  selected: { variantId: string; edges: AppMapEdge[]; score: number } | undefined,
+  ambiguous: boolean
+): RoutePlanDiagnostics {
+  const bestScore = rankedRoutes[0]?.score;
+  return {
+    target: descriptor.target ?? descriptor.value ?? descriptor.kind,
+    selected_variant_id: selected?.variantId,
+    ambiguous,
+    route_candidates: rankedRoutes.map((route) => {
+      const variant = map.variants.find((candidate) => candidate.id === route.variantId);
+      const isSelected = selected?.variantId === route.variantId;
+      return {
+        variant_id: route.variantId,
+        screen_id: variant?.screen_id,
+        score: Math.round(route.score * 100) / 100,
+        route: route.edges.map(summarizeEdge),
+        selected: isSelected,
+        ...(isSelected
+          ? {}
+          : { rejected_reason: ambiguous && route.score === bestScore ? 'ambiguous_tie' : 'lower_score' })
+      };
+    })
+  };
 }
 
 function routeableDescriptor(descriptor: TargetDescriptor): boolean {
@@ -1178,7 +1243,7 @@ function demoteEdge(context: AppMapContext, edge: AppMapEdge): void {
 }
 
 function shouldRequireObservedEffect(command: CommandName, args: Record<string, unknown>): boolean {
-  return command === 'tap' || command === 'navigate' || (command === 'act' && args.name === 'back');
+  return command === 'tap' || command === 'navigate' || command === 'scroll' || (command === 'act' && args.name === 'back');
 }
 
 function assertObservedEffect(
@@ -1479,9 +1544,22 @@ function currentScreenTapArgs(variant: AppMapVariant, descriptor: TargetDescript
     if (coordinateArgs) {
       return coordinateArgs;
     }
+    const stableTarget = plainTapTargets(element)[0] ?? element.selector;
+    if (stableTarget && shouldUseStableTargetFallback(element, descriptor)) {
+      return { target: stableTarget };
+    }
   }
 
   return null;
+}
+
+function shouldUseStableTargetFallback(element: SourceElement, descriptor: TargetDescriptor): boolean {
+  if (descriptor.kind !== 'text-contains') {
+    return false;
+  }
+
+  const value = descriptor.value ?? '';
+  return value !== '' && !element.labels.some((label) => label.includes(value));
 }
 
 function sectionFirstTapArgs(variant: AppMapVariant, descriptor: TargetDescriptor): Record<string, unknown> | null {
@@ -1782,7 +1860,7 @@ export async function runMappedCommand(
   }
 
   let before = await observeCurrentScreen(context);
-  if (descriptor.kind === 'coordinate') {
+  if (descriptor.kind === 'coordinate' || command === 'scroll') {
     const details = await context.adapter[command](args);
     const after = await observeCurrentScreen(context);
     assertObservedEffect(command, args, before, after, descriptor);
@@ -1808,6 +1886,9 @@ export async function runMappedCommand(
         context.summary.used = true;
         metadata.routed = true;
         metadata.route = route.edges.map(summarizeEdge);
+        if (route.diagnostics) {
+          metadata.diagnostics = route.diagnostics;
+        }
         const driven = await driveRoute(context, before, route.edges);
         before = driven.current;
         liveTargetVisible = await liveContainsTarget(context, descriptor);

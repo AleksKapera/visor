@@ -71,6 +71,8 @@ interface VersionData {
   versionText: string;
 }
 
+type JsonRecord = Record<string, unknown>;
+
 function packageVersion(): string {
   try {
     const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -487,6 +489,66 @@ function targetInitializationNextStep(error: unknown): string {
   return 'Verify Appium driver setup, target device state, and app id, then retry.';
 }
 
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function mapArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function appMapSummaryFromPath(mapPath: string): JsonRecord | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(mapPath, 'utf8')) as unknown;
+    if (!isRecord(parsed)) {
+      return undefined;
+    }
+
+    const variants = mapArray(parsed.variants);
+    return {
+      schema_version: typeof parsed.schema_version === 'number' ? parsed.schema_version : undefined,
+      identity: optionalString(parsed.identity),
+      app_id: optionalString(parsed.app_id),
+      platform: optionalString(parsed.platform),
+      screens: mapArray(parsed.screens).length,
+      variants: variants.length,
+      edges: mapArray(parsed.edges).length,
+      auth_required_variants: variants.filter((variant) => isRecord(variant) && variant.auth_required === true).length,
+      updated_at: optionalString(parsed.updated_at)
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function addDiscoverMapSummary(result: Record<string, unknown>): Record<string, unknown> {
+  if (!isRecord(result.map)) {
+    return result;
+  }
+
+  const map = result.map;
+  if (map.summary !== undefined || typeof map.path !== 'string') {
+    return result;
+  }
+
+  const summary = appMapSummaryFromPath(map.path);
+  if (!summary) {
+    return result;
+  }
+
+  return {
+    ...result,
+    map: {
+      ...map,
+      summary
+    }
+  };
+}
+
 function cmdHelp(command?: string): CommandResult {
   const commandId = makeId('cmd');
   const startedAt = utcNowIso();
@@ -763,7 +825,7 @@ export async function cmdDiscover(parsed: ParsedCommand): Promise<CommandResult>
       }
     );
     const response = envelopeOk(commandId, startedAt, [], 'run');
-    response.data = result;
+    response.data = addDiscoverMapSummary(result);
     return { code: 0, response };
   } catch (error) {
     const isDaemonUnavailable = error instanceof DaemonUnavailableError;

@@ -74,8 +74,23 @@ Mapped execution metadata uses these fields:
 | `schema_version` | number | App-map schema version |
 | `path` | string | Host path to the persisted app map when enabled |
 | `identity` | string | App-map identity, scoped by platform and app id |
+| `summary` | object | Path-free app-map inventory attached to `visor discover` responses when the persisted map can be read |
 
 Direct action commands return this object in `data.map`. Scenario runs return it in `data.run.map`. A routed or repaired step may also include `details.map.route`, an ordered list of hidden route actions Visor performed before the requested step action.
+
+`visor discover` adds `data.map.summary` when mapped execution is enabled and the persisted map file is readable. The summary is safe to share in reviews because it does not include the host map path.
+
+| Summary field | Type | Meaning |
+| --- | --- | --- |
+| `schema_version` | number | App-map schema version read from disk |
+| `identity` | string | App-map identity, scoped by platform and app id |
+| `app_id` | string | App id used for the map |
+| `platform` | string | `android` or `ios` |
+| `screens` | number | Count of discovered logical screens |
+| `variants` | number | Count of discovered screen variants |
+| `edges` | number | Count of recorded navigation edges |
+| `auth_required_variants` | number | Count of variants marked as requiring authentication |
+| `updated_at` | string | Last persisted map update timestamp |
 
 ## Assertion result
 

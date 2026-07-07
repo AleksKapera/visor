@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { vi } from 'vitest';
 
 import { resetDeviceCommandRunner, setDeviceCommandRunner } from '../src/devices.js';
@@ -288,6 +292,81 @@ describe('cli app map options', () => {
         appId: 'com.example.settings'
       }
     );
+  });
+
+  it('adds a shareable app-map summary to discover responses without depending on host paths', async () => {
+    const mapRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-cli-map-summary-'));
+    const mapPath = path.join(mapRoot, 'map.json');
+    fs.writeFileSync(
+      mapPath,
+      `${JSON.stringify({
+        schema_version: 1,
+        identity: 'android:com.example.settings',
+        app_id: 'com.example.settings',
+        platform: 'android',
+        created_at: '2026-07-07T00:00:00.000Z',
+        updated_at: '2026-07-07T00:01:00.000Z',
+        screens: [
+          { id: 'screen_1', variant_ids: ['variant_1'] },
+          { id: 'screen_2', variant_ids: ['variant_2'] }
+        ],
+        variants: [
+          { id: 'variant_1', screen_id: 'screen_1', auth_required: false },
+          { id: 'variant_2', screen_id: 'screen_2', auth_required: true }
+        ],
+        edges: [
+          { id: 'edge_1', from_variant_id: 'variant_1', to_variant_id: 'variant_2' },
+          { id: 'edge_2', from_variant_id: 'variant_2', to_variant_id: 'variant_1' }
+        ]
+      })}\n`,
+      'utf8'
+    );
+    daemonMock.runDaemonDiscover.mockResolvedValue({
+      action: 'discover',
+      map: {
+        enabled: true,
+        used: false,
+        updated: true,
+        repaired: false,
+        repairs: 0,
+        schema_version: 1,
+        identity: 'android:com.example.settings',
+        path: mapPath
+      },
+      screen: {
+        variant_id: 'variant_2',
+        screen_id: 'screen_2',
+        element_count: 5
+      }
+    });
+
+    try {
+      const result = await executeCommand([
+        'discover',
+        '--device',
+        'emulator-5554',
+        '--app-id',
+        'com.example.settings'
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.response.data.map).toMatchObject({
+        summary: {
+          schema_version: 1,
+          identity: 'android:com.example.settings',
+          app_id: 'com.example.settings',
+          platform: 'android',
+          screens: 2,
+          variants: 2,
+          edges: 2,
+          auth_required_variants: 1,
+          updated_at: '2026-07-07T00:01:00.000Z'
+        }
+      });
+      expect(JSON.stringify((result.response.data.map as { summary?: unknown }).summary)).not.toContain(mapPath);
+    } finally {
+      fs.rmSync(mapRoot, { recursive: true, force: true });
+    }
   });
 
   it('passes crawl discovery options through discover', async () => {

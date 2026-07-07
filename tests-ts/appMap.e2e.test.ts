@@ -19,6 +19,7 @@ class ScreenGraphAdapter implements PlatformAdapter {
         liveTargets?: string[];
         missingLiveTargets?: string[];
         coordinateTaps?: Record<string, string>;
+        scrolls?: Record<string, string>;
       }
     >,
     private screen = 'home'
@@ -70,7 +71,12 @@ class ScreenGraphAdapter implements PlatformAdapter {
   }
 
   async scroll(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    this.actions.push(`scroll:${String(args.direction ?? '')}`);
+    const direction = String(args.direction ?? '');
+    this.actions.push(`scroll:${direction}`);
+    const next = this.graph[this.screen]?.scrolls?.[direction];
+    if (next) {
+      this.screen = next;
+    }
     return { action: 'scroll', args };
   }
 
@@ -147,6 +153,16 @@ function scenarioWithWait(): Scenario {
     meta: { name: 'wait', version: '1.0.0' },
     config: {},
     steps: [{ id: 'wait', command: 'wait', args: { ms: 1 } }],
+    assertions: [],
+    output: {}
+  };
+}
+
+function scenarioWithScroll(direction: string): Scenario {
+  return {
+    meta: { name: `scroll ${direction}`, version: '1.0.0' },
+    config: {},
+    steps: [{ id: `scroll-${direction}`, command: 'scroll', args: { direction } }],
     assertions: [],
     output: {}
   };
@@ -302,6 +318,27 @@ const numericContainsGraph = {
   },
   selected: {
     source: '<App><StaticText name="Selected" label="Selected" /></App>',
+    taps: {}
+  }
+};
+
+const scrollRouteGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Orders" label="Orders" />' +
+      '<XCUIElementTypeOther name="Order #1001&#10;$42" label="Order #1001&#10;$42" enabled="true" visible="true" accessible="true" x="20" y="180" width="330" height="88" /></App>',
+    scrolls: { down: 'older-orders' },
+    taps: {}
+  },
+  'older-orders': {
+    source:
+      '<App><StaticText name="Older orders" label="Older orders" />' +
+      '<Button name="Receipt #0998" label="Receipt #0998" x="20" y="420" width="240" height="56" /></App>',
+    coordinateTaps: { '140,448': 'receipt' },
+    taps: { 'text=Receipt #0998': 'receipt' }
+  },
+  receipt: {
+    source: '<App><StaticText name="Receipt #0998 detail" label="Receipt #0998 detail" /></App>',
     taps: {}
   }
 };
@@ -1369,6 +1406,72 @@ describe('app map execution', () => {
     });
   });
 
+  it('explains selected and rejected mapped route candidates', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.section-first-route-diagnostics'
+    };
+
+    await runScenario(
+      scenarioWithCoordinateTapAt(124, 807),
+      new ScreenGraphAdapter(sectionFirstRouteControlGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+    await runScenario(
+      scenarioWithCoordinateTapAt(355, 807),
+      new ScreenGraphAdapter(sectionFirstRouteControlGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const routedRun = await runScenario(
+      scenarioWithTap('first-in-section=Top Starter portfolios'),
+      new ScreenGraphAdapter(sectionFirstRouteControlGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const diagnostics = routedRun.steps[0]?.details.map?.diagnostics as {
+      target: string;
+      route_candidates: Array<{
+        selected: boolean;
+        score: number;
+        route: Array<{ command: string; target?: string }>;
+        rejected_reason?: string;
+      }>;
+    };
+
+    expect(routedRun.status).toBe('ok');
+    expect(diagnostics).toMatchObject({
+      target: 'first-in-section=Top Starter portfolios'
+    });
+    expect(diagnostics.route_candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          selected: true,
+          route: [expect.objectContaining({ command: 'tap', target: 'x=124,y=807' })]
+        }),
+        expect.objectContaining({
+          selected: false,
+          rejected_reason: expect.any(String)
+        })
+      ])
+    );
+    expect(diagnostics.route_candidates.every((candidate) => typeof candidate.score === 'number')).toBe(true);
+  });
+
   it('ignores shorter section matches from a conflicting tab', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
@@ -1745,6 +1848,94 @@ describe('app map execution', () => {
     expect(run.steps[0]?.details.map).toMatchObject({
       routed: true,
       route: [{ command: 'tap', target: 'Settings' }]
+    });
+  });
+
+  it('routes contains text targets case-insensitively through the app map', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.contains-text-case'
+    };
+
+    await runScenario(
+      scenarioWithTap('Settings'),
+      new ScreenGraphAdapter(graph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const adapter = new ScreenGraphAdapter(graph);
+    const run = await runScenario(
+      scenarioWithTap('text~=adv'),
+      adapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(run.status).toBe('ok');
+    expect(adapter.actions).toEqual([
+      'source:home',
+      'tap:Settings',
+      'source:settings',
+      'tap:Advanced',
+      'source:advanced'
+    ]);
+    expect(run.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'Settings' }]
+    });
+  });
+
+  it('reuses discovered scroll transitions to reach off-screen targets', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.scroll-route'
+    };
+
+    const learningRun = await runScenario(
+      scenarioWithScroll('down'),
+      new ScreenGraphAdapter(scrollRouteGraph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(learningRun.status).toBe('ok');
+
+    const routedAdapter = new ScreenGraphAdapter(scrollRouteGraph);
+    const routedRun = await runScenario(
+      scenarioWithTap('text=Receipt #0998'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:home',
+      'scroll:down',
+      'source:older-orders',
+      'tap:140,448',
+      'source:receipt'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'scroll', target: 'scroll=down' }]
     });
   });
 
