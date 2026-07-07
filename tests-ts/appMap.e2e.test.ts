@@ -655,6 +655,47 @@ const sectionFirstGraph = {
   }
 };
 
+const genericCommerceSectionGraph = {
+  shop: {
+    source:
+      '<App><StaticText name="Shop" label="Shop" />' +
+      '<Button name="Shop&#10;Shop" label="Shop&#10;Shop" x="9" y="787" width="96" height="40" />' +
+      '<Button name="Catalog&#10;Catalog" label="Catalog&#10;Catalog" x="120" y="787" width="96" height="40" />' +
+      '<Button name="Cart&#10;Cart" label="Cart&#10;Cart" x="231" y="787" width="96" height="40" /></App>',
+    coordinateTaps: { '168,807': 'catalog', '279,807': 'cart' },
+    taps: {}
+  },
+  catalog: {
+    source:
+      '<App><StaticText name="Catalog" label="Catalog" />' +
+      '<XCUIElementTypeStaticText name="Featured products" label="Featured products" enabled="true" visible="true" accessible="true" x="20" y="160" width="180" height="28" />' +
+      '<XCUIElementTypeOther name="Trail Jacket&#10;$120" label="Trail Jacket&#10;$120" enabled="true" visible="true" accessible="true" x="20" y="205" width="330" height="88" />' +
+      '<XCUIElementTypeOther name="Canvas Tote&#10;$48" label="Canvas Tote&#10;$48" enabled="true" visible="true" accessible="true" x="20" y="305" width="330" height="88" />' +
+      '<Button name="Shop&#10;Shop" label="Shop&#10;Shop" x="9" y="787" width="96" height="40" />' +
+      '<Button name="Catalog&#10;Catalog" label="Catalog&#10;Catalog" x="120" y="787" width="96" height="40" />' +
+      '<Button name="Cart&#10;Cart" label="Cart&#10;Cart" x="231" y="787" width="96" height="40" /></App>',
+    coordinateTaps: { '57,807': 'shop', '185,249': 'trail-jacket', '185,349': 'canvas-tote' },
+    taps: {}
+  },
+  cart: {
+    source:
+      '<App><StaticText name="Cart" label="Cart" />' +
+      '<Button name="Shop&#10;Shop" label="Shop&#10;Shop" x="9" y="787" width="96" height="40" />' +
+      '<Button name="Catalog&#10;Catalog" label="Catalog&#10;Catalog" x="120" y="787" width="96" height="40" />' +
+      '<Button name="Cart&#10;Cart" label="Cart&#10;Cart" x="231" y="787" width="96" height="40" /></App>',
+    coordinateTaps: { '57,807': 'shop', '168,807': 'catalog' },
+    taps: {}
+  },
+  'trail-jacket': {
+    source: '<App><StaticText name="Trail Jacket detail" label="Trail Jacket detail" /></App>',
+    taps: {}
+  },
+  'canvas-tote': {
+    source: '<App><StaticText name="Canvas Tote detail" label="Canvas Tote detail" /></App>',
+    taps: {}
+  }
+};
+
 const sectionFirstDuplicateVariantGraph = {
   ...sectionFirstGraph,
   'starter-duplicate': {
@@ -1147,6 +1188,49 @@ describe('app map execution', () => {
     expect(routedRun.steps[0]?.details.map).toMatchObject({
       routed: true,
       route: [{ command: 'tap', target: 'x=124,y=807' }]
+    });
+  });
+
+  it('learns non-Dub tab destinations for section-relative targets', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.generic-commerce-section'
+    };
+
+    await runScenario(
+      scenarioWithCoordinateTapAt(168, 807),
+      new ScreenGraphAdapter(genericCommerceSectionGraph, 'shop'),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    const routedAdapter = new ScreenGraphAdapter(genericCommerceSectionGraph, 'shop');
+    const routedRun = await runScenario(
+      scenarioWithTap('first-in-section=Featured products'),
+      routedAdapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(routedRun.status).toBe('ok');
+    expect(routedAdapter.actions).toEqual([
+      'source:shop',
+      'tap:168,807',
+      'source:catalog',
+      'tap:185,249',
+      'source:trail-jacket'
+    ]);
+    expect(routedRun.steps[0]?.details.map).toMatchObject({
+      routed: true,
+      route: [{ command: 'tap', target: 'x=168,y=807' }]
     });
   });
 

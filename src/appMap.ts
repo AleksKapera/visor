@@ -166,6 +166,12 @@ interface TapCandidateOptions {
   skipCurrentNavigation?: boolean;
 }
 
+interface NavigationControl {
+  element: SourceElement;
+  target: string;
+  priority: number;
+}
+
 interface CrawlSummary {
   enabled: boolean;
   actions: number;
@@ -198,13 +204,6 @@ const RISKY_WORDS = [
 
 const INPUT_WORDS = ['password', 'email', 'username', 'search', 'input', 'text field', 'textfield'];
 const AUTH_WORDS = ['login', 'log in', 'sign in', 'password', 'username', 'auth', 'authentication'];
-const NAV_TARGET_PRIORITY = new Map([
-  ['starter', 0],
-  ['premium', 1],
-  ['leaderboard', 2],
-  ['activity', 3],
-  ['home', 4]
-]);
 
 function envNoMap(): boolean {
   const raw = process.env.VISOR_NO_MAP ?? process.env.VISOR_DISABLE_MAP;
@@ -536,8 +535,12 @@ function similarity(left: string[], right: string[]): number {
 }
 
 function identityKeys(elements: SourceElement[], includeStatic: boolean): string[] {
+  const navigationElements = new Set(navigationControlsForElements(elements).map((control) => control.element));
   return unique(
     elements.flatMap((element) => {
+      if (navigationElements.has(element)) {
+        return [];
+      }
       const tag = element.tag.toLowerCase();
       if (!includeStatic && isStaticIdentityElement(element)) {
         return [];
@@ -568,23 +571,18 @@ function screenSimilarity(left: SourceElement[], right: SourceElement[]): number
 
 function isGlobalIdentityLabel(label: string, element?: SourceElement): boolean {
   const normalized = normalizeControlTarget(label);
-  if (normalized.startsWith('com.dubapp.dev')) {
+  if (isBundleLikeLabel(normalized)) {
     return true;
   }
   if (['settings settings', 'notifications notifications'].includes(normalized)) {
     return true;
   }
 
-  for (const navTarget of NAV_TARGET_PRIORITY.keys()) {
-    if (normalized === `${navTarget} ${navTarget}`) {
-      return true;
-    }
-    if (normalized === navTarget && (!element || isLikelyTapElement(element))) {
-      return true;
-    }
-  }
-
   return false;
+}
+
+function isBundleLikeLabel(normalized: string): boolean {
+  return /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,}$/.test(normalized);
 }
 
 function newVariant(map: AppMapFile, observation: ScreenObservation): AppMapVariant {
@@ -796,16 +794,16 @@ async function liveContainsTarget(context: AppMapContext, descriptor: TargetDesc
 
 function candidateVariants(map: AppMapFile, descriptor: TargetDescriptor): AppMapVariant[] {
   return map.variants.filter(
-    (variant) => variantContainsTarget(variant, descriptor) && variantMatchesDescriptorContext(variant, descriptor)
+    (variant) => variantContainsTarget(variant, descriptor) && variantMatchesDescriptorContext(map, variant, descriptor)
   );
 }
 
-function variantMatchesDescriptorContext(variant: AppMapVariant, descriptor: TargetDescriptor): boolean {
+function variantMatchesDescriptorContext(map: AppMapFile, variant: AppMapVariant, descriptor: TargetDescriptor): boolean {
   if (descriptor.kind !== 'section-first') {
     return true;
   }
 
-  const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '');
+  const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '', map);
   if (!navigationHint) {
     return true;
   }
@@ -886,6 +884,7 @@ function planRoute(map: AppMapFile, fromVariantId: string, descriptor: TargetDes
         ...route,
         score:
           destinationTargetScore(
+            map,
             map.variants.find((variant) => variant.id === route.variantId),
             descriptor
           ) + routeTargetScore(map, route.edges, descriptor)
@@ -992,7 +991,7 @@ function hasRealEdgeForTap(map: AppMapFile, fromVariantId: string, candidate: Ta
   );
 }
 
-function destinationTargetScore(variant: AppMapVariant | undefined, descriptor: TargetDescriptor): number {
+function destinationTargetScore(map: AppMapFile, variant: AppMapVariant | undefined, descriptor: TargetDescriptor): number {
   if (!variant) {
     return 0;
   }
@@ -1004,7 +1003,7 @@ function destinationTargetScore(variant: AppMapVariant | undefined, descriptor: 
     }
 
     let score = isHighValueContentCard(element) ? 10 : 7;
-    const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '');
+    const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '', map);
     const navigationTarget = preferredNavigationTarget(variant);
     if (navigationHint && navigationTarget === navigationHint) {
       score += 5;
@@ -1042,12 +1041,7 @@ function destinationTargetScore(variant: AppMapVariant | undefined, descriptor: 
     score = Math.max(score, elementScore);
   }
 
-  const navigationTarget = preferredNavigationTarget(variant);
-  const value = normalizeControlTarget(descriptor.value ?? descriptor.target ?? '');
-  if (navigationTarget === 'activity' && !/(activity|feed|investments?)/.test(value)) {
-    score -= 4;
-  }
-  if ((navigationTarget === 'starter' || navigationTarget === 'premium') && score > 0) {
+  if (preferredNavigationTarget(variant) && score > 0) {
     score += 1;
   }
 
@@ -1059,7 +1053,7 @@ function routeTargetScore(map: AppMapFile, route: AppMapEdge[], descriptor: Targ
     return 0;
   }
 
-  const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '');
+  const navigationHint = sectionNavigationHint(descriptor.value ?? descriptor.target ?? '', map);
   if (!navigationHint) {
     return 0;
   }
@@ -1075,27 +1069,20 @@ function routeTargetScore(map: AppMapFile, route: AppMapEdge[], descriptor: Targ
 
 function edgeNavigationTarget(map: AppMapFile, edge: AppMapEdge): string | null {
   const normalizedTarget = normalizeControlTarget(edge.target ?? '');
-  if (NAV_TARGET_PRIORITY.has(normalizedTarget)) {
+  const from = map.variants.find((variant) => variant.id === edge.from_variant_id);
+  if (from && isNavigationTarget(from, normalizedTarget)) {
     return normalizedTarget;
   }
 
-  const from = map.variants.find((variant) => variant.id === edge.from_variant_id);
   if (!from || edge.command !== 'tap') {
     return null;
   }
 
   const edgeCoordinateTarget = coordinateTarget(edge.args);
-  for (const element of from.elements) {
-    if (!isLikelyTapElement(element)) {
-      continue;
-    }
-    const target = normalizeControlTarget(plainTapTargets(element)[0] ?? element.selector);
-    if (!NAV_TARGET_PRIORITY.has(target)) {
-      continue;
-    }
-    const elementCoordinateTarget = coordinateArgsForElement(element);
+  for (const control of navigationControls(from)) {
+    const elementCoordinateTarget = coordinateArgsForElement(control.element);
     if (elementCoordinateTarget && coordinateTarget(elementCoordinateTarget) === edgeCoordinateTarget) {
-      return target;
+      return control.target;
     }
   }
 
@@ -1264,7 +1251,7 @@ function safeTapCandidates(variant: AppMapVariant, options: TapCandidateOptions 
   const seen = new Set<string>();
   const currentNavigationTarget = options.skipCurrentNavigation ? preferredNavigationTarget(variant) : null;
   const elements = [...variant.elements].sort((left, right) => {
-    const priority = tapElementPriority(left, options) - tapElementPriority(right, options);
+    const priority = tapElementPriority(left, variant, options) - tapElementPriority(right, variant, options);
     if (priority !== 0) {
       return priority;
     }
@@ -1281,7 +1268,7 @@ function safeTapCandidates(variant: AppMapVariant, options: TapCandidateOptions 
       continue;
     }
     const normalizedTarget = normalizeControlTarget(target);
-    if (options.excludeNavigation && NAV_TARGET_PRIORITY.has(normalizedTarget)) {
+    if (options.excludeNavigation && isNavigationTarget(variant, normalizedTarget)) {
       continue;
     }
     if (currentNavigationTarget && normalizedTarget === currentNavigationTarget) {
@@ -1301,14 +1288,14 @@ function safeTapCandidates(variant: AppMapVariant, options: TapCandidateOptions 
   return candidates;
 }
 
-function tapElementPriority(element: SourceElement, options: TapCandidateOptions = {}): number {
+function tapElementPriority(element: SourceElement, variant: AppMapVariant, options: TapCandidateOptions = {}): number {
   const target = plainTapTargets(element)[0] ?? element.selector;
   const normalized = normalizeControlTarget(target);
   if (options.preferContent && isHighValueContentCard(element)) {
     return 5;
   }
 
-  const navPriority = NAV_TARGET_PRIORITY.get(normalized);
+  const navPriority = navigationControlPriority(variant, normalized);
   if (navPriority !== undefined) {
     if (options.preferContent) {
       return 80 + navPriority;
@@ -1318,9 +1305,6 @@ function tapElementPriority(element: SourceElement, options: TapCandidateOptions
 
   if (normalized === 'see all') {
     return 10;
-  }
-  if (normalized === 'deposit') {
-    return 20;
   }
   if (isBackControl(element)) {
     return 90;
@@ -1339,16 +1323,17 @@ function isHighValueContentCard(element: SourceElement): boolean {
     return false;
   }
   const target = plainTapTargets(element)[0] ?? element.selector;
-  if (NAV_TARGET_PRIORITY.has(normalizeControlTarget(target))) {
+  const normalizedTarget = normalizeControlTarget(target);
+  if (normalizedTarget === 'see all' || /^(back|close|dismiss|done)$/i.test(target)) {
     return false;
   }
 
-  const haystack = element.labels.join(' ').toLowerCase();
+  const lines = unique(element.labels.flatMap((label) => label.split(/\n+/).map((line) => line.trim())));
+  const area = (element.width ?? 0) * (element.height ?? 0);
   return (
-    haystack.includes('capital') ||
-    haystack.includes('all-time') ||
-    haystack.includes('vs. market') ||
-    /\+\s*\d/.test(haystack)
+    lines.length >= 2 ||
+    (element.tag.toLowerCase().includes('other') && area >= 3000) ||
+    ((element.width ?? 0) >= 120 && (element.height ?? 0) >= 64 && element.labels.length > 0)
   );
 }
 
@@ -1356,9 +1341,11 @@ function normalizeControlTarget(target: string): string {
   return target.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-function sectionNavigationHint(value: string): string | null {
+function sectionNavigationHint(value: string, map: AppMapFile): string | null {
   const normalized = normalizeControlTarget(value);
-  for (const target of NAV_TARGET_PRIORITY.keys()) {
+  const targets = unique(map.variants.flatMap((variant) => navigationControls(variant).map((control) => control.target)))
+    .sort((left, right) => right.length - left.length);
+  for (const target of targets) {
     if (normalized.includes(target)) {
       return target;
     }
@@ -1368,7 +1355,7 @@ function sectionNavigationHint(value: string): string | null {
 
 function crawlCandidateOptions(variant: AppMapVariant): TapCandidateOptions {
   const preferredTarget = preferredNavigationTarget(variant);
-  const preferContent = preferredTarget !== null && preferredTarget !== 'home';
+  const preferContent = preferredTarget !== null && !isPrimaryNavigationTarget(variant, preferredTarget);
   return {
     preferContent,
     excludeNavigation: preferContent,
@@ -1377,52 +1364,102 @@ function crawlCandidateOptions(variant: AppMapVariant): TapCandidateOptions {
 }
 
 function preferredNavigationTarget(variant: AppMapVariant): string | null {
-  if (!hasBottomNavigation(variant)) {
+  const controls = navigationControls(variant);
+  if (controls.length === 0) {
     return null;
   }
 
   const labels = contentLabels(variant);
-  if (labels.some((label) => label === 'feed' || label === 'investments' || label.includes('for you'))) {
-    return 'activity';
+  const matched = controls.find((control) =>
+    labels.some((label) => labelMatchesNavigationTarget(label, control.target))
+  );
+  if (matched) {
+    return matched.target;
   }
-  if (labels.some((label) => label.includes('starter investments'))) {
-    return 'starter';
-  }
-  if (labels.some((label) => label.includes('premium investments'))) {
-    return 'premium';
-  }
-  if (labels.some((label) => label.includes('leaderboard'))) {
-    return 'leaderboard';
-  }
-  if (
-    labels.some((label) =>
-      label.includes('three ways to get started') ||
-      label === 'deposit' ||
-      label.includes('explore popular creators') ||
-      label === 'settings' ||
-      label === 'notifications'
-    )
-  ) {
-    return 'home';
-  }
-  return null;
+
+  return controls[0]?.target ?? null;
 }
 
 function hasBottomNavigation(variant: AppMapVariant): boolean {
-  const labels = new Set(
-    variant.elements
-      .filter((element) => isLikelyTapElement(element))
-      .flatMap((element) => element.labels.map(normalizeControlTarget))
-  );
-  return ['home', 'starter', 'premium'].every((target) => labels.has(target) || labels.has(`${target} ${target}`));
+  return navigationControls(variant).length >= 2;
 }
 
 function contentLabels(variant: AppMapVariant): string[] {
   return variant.elements.flatMap((element) =>
     element.labels
+      .filter(() => !isNavigationElement(variant, element))
       .filter((label) => !isGlobalIdentityLabel(label, element))
       .map(normalizeControlTarget)
   );
+}
+
+function navigationControls(variant: AppMapVariant): NavigationControl[] {
+  return navigationControlsForElements(variant.elements);
+}
+
+function navigationControlsForElements(elements: SourceElement[]): NavigationControl[] {
+  const candidates = elements
+    .filter((element) => element.safety === 'safe' && element.stable && isLikelyTapElement(element))
+    .filter((element) => !isBackControl(element))
+    .filter((element) => coordinateArgsForElement(element) !== null)
+    .map((element) => ({ element, target: normalizeControlTarget(plainTapTargets(element)[0] ?? element.selector) }))
+    .filter((candidate) => isCompactNavigationLabel(candidate.element, candidate.target));
+
+  if (candidates.length < 2) {
+    return [];
+  }
+
+  const maxY = Math.max(...candidates.map((candidate) => candidate.element.y ?? 0));
+  const bottomRow = candidates
+    .filter((candidate) => (candidate.element.y ?? 0) >= maxY - 12)
+    .sort((left, right) => (left.element.x ?? 0) - (right.element.x ?? 0));
+
+  if (bottomRow.length < 2) {
+    return [];
+  }
+
+  return bottomRow.map((candidate, priority) => ({
+    ...candidate,
+    priority
+  }));
+}
+
+function isCompactNavigationLabel(element: SourceElement, target: string): boolean {
+  if (!target || target.includes('\n') || target.length > 32 || target === 'see all') {
+    return false;
+  }
+  if ((element.height ?? 0) > 72) {
+    return false;
+  }
+
+  const lines = unique(element.labels.flatMap((label) => label.split(/\n+/).map((line) => normalizeControlTarget(line))));
+  return lines.length <= 2 && lines.some((line) => line === target);
+}
+
+function isNavigationElement(variant: AppMapVariant, element: SourceElement): boolean {
+  return navigationControls(variant).some((control) => control.element === element);
+}
+
+function isNavigationTarget(variant: AppMapVariant, normalizedTarget: string): boolean {
+  return navigationControls(variant).some((control) => control.target === normalizedTarget);
+}
+
+function navigationControlPriority(variant: AppMapVariant, normalizedTarget: string): number | undefined {
+  return navigationControls(variant).find((control) => control.target === normalizedTarget)?.priority;
+}
+
+function isPrimaryNavigationTarget(variant: AppMapVariant, normalizedTarget: string): boolean {
+  return navigationControls(variant)[0]?.target === normalizedTarget;
+}
+
+function labelMatchesNavigationTarget(label: string, target: string): boolean {
+  if (label === target) {
+    return true;
+  }
+
+  const labelWords = new Set(label.split(/[^a-z0-9]+/).filter(Boolean));
+  const targetWords = target.split(/[^a-z0-9]+/).filter(Boolean);
+  return targetWords.length > 0 && targetWords.every((word) => labelWords.has(word));
 }
 
 function currentScreenTapArgs(variant: AppMapVariant, descriptor: TargetDescriptor): Record<string, unknown> | null {
@@ -1471,7 +1508,7 @@ function firstItemInSection(variant: AppMapVariant, descriptor: TargetDescriptor
         element !== section &&
         element.y !== null &&
         element.y > sectionY &&
-        isLikelySectionHeading(element)
+        isLikelySectionHeading(variant, element)
     )
     .map((element) => element.y as number)
     .sort((left, right) => left - right)[0] ?? null;
@@ -1479,7 +1516,7 @@ function firstItemInSection(variant: AppMapVariant, descriptor: TargetDescriptor
   const candidates = variant.elements
     .filter(
       (element) =>
-        isSectionItemCandidate(element, value) &&
+        isSectionItemCandidate(variant, element, value) &&
         element.y !== null &&
         element.y > sectionBottom &&
         (nextSectionY === null || element.y < nextSectionY)
@@ -1503,7 +1540,7 @@ function sectionHeadingElement(variant: AppMapVariant, value: string): SourceEle
   return matches[0] ?? null;
 }
 
-function isSectionItemCandidate(element: SourceElement, sectionValue: string): boolean {
+function isSectionItemCandidate(variant: AppMapVariant, element: SourceElement, sectionValue: string): boolean {
   if (!(element.safety === 'safe' && element.stable && isLikelyTapElement(element))) {
     return false;
   }
@@ -1515,29 +1552,31 @@ function isSectionItemCandidate(element: SourceElement, sectionValue: string): b
   }
 
   const target = normalizeControlTarget(plainTapTargets(element)[0] ?? element.selector);
-  if (NAV_TARGET_PRIORITY.has(target) || target === 'see all') {
+  if (isNavigationTarget(variant, target) || target === 'see all') {
     return false;
   }
 
   return true;
 }
 
-function isLikelySectionHeading(element: SourceElement): boolean {
+function isLikelySectionHeading(variant: AppMapVariant, element: SourceElement): boolean {
   if (isHighValueContentCard(element)) {
     return false;
   }
 
   const labels = element.labels.map(normalizeControlTarget);
-  if (labels.some((label) => label === 'see all' || NAV_TARGET_PRIORITY.has(label))) {
+  if (labels.some((label) => label === 'see all' || isNavigationTarget(variant, label))) {
     return false;
   }
 
-  return labels.some(
-    (label) =>
-      /^top .*(investors|portfolios)/.test(label) ||
-      /\b(starter|premium)\s+investments\b/.test(label) ||
-      /\b(investors|portfolios)\b/.test(label)
-  );
+  return labels.some((label) => {
+    if (!/[a-z]/i.test(label)) {
+      return false;
+    }
+    const words = label.split(/\s+/).filter(Boolean);
+    const lineCount = label.split(/\n+/).filter(Boolean).length;
+    return words.length <= 8 && lineCount <= 2;
+  });
 }
 
 function elementLabelMatchesValue(element: SourceElement, value: string): boolean {

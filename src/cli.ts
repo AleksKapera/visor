@@ -236,9 +236,9 @@ function commandHelpText(command: string): { usageText: string; examples: string
   if (command === 'tap') {
     const examples = [
       'visor tap --target accessibility=Continue',
-      'visor tap --target text=Deposit',
-      'visor tap --target text~=Starter',
-      'visor tap --target "first-in-section=Top Starter portfolios"',
+      'visor tap --target text=Continue',
+      'visor tap --target text~=Settings',
+      'visor tap --target "first-in-section=Featured products"',
       'visor tap --x 120 --y 640',
       'visor tap --x 0.5 --y 0.92 --normalized'
     ];

@@ -59,7 +59,7 @@ Use `first-in-section=` when the request is relative to a visible section rather
 Example:
 
 ```text
-first-in-section=Top Starter portfolios
+first-in-section=Featured products
 ```
 
 With mapped execution enabled, Visor routes to a screen containing that section heading and taps the first safe tappable item below it by source geometry. It skips section headings, `See all` controls, bottom navigation, back controls, static text, images, form fields, and hidden or zero-size elements.
@@ -100,7 +100,7 @@ That means these assertion targets are valid:
 - `Increment`
 - `accessibility=Increment`
 - `text=Checkout`
-- `text~=Starter`
+- `text~=Settings`
 - `id=primary-cta`
 - `xpath=//*[@text='Checkout']`
 - `uiautomator=new UiSelector().text("OK")`

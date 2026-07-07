@@ -109,7 +109,7 @@ describe('typescript cli', () => {
     expect(data.usageText).toContain('--normalized');
     expect(data.usageText).not.toContain('validate <scenario>');
     expect(data.examples).toContain('visor tap --target accessibility=Continue');
-    expect(data.examples).toContain('visor tap --target "first-in-section=Top Starter portfolios"');
+    expect(data.examples).toContain('visor tap --target "first-in-section=Featured products"');
   });
 
   it('validates a good scenario', async () => {
