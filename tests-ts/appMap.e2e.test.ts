@@ -918,6 +918,79 @@ const scrollPriorityGraph = {
   }
 };
 
+const repeatedPortfolioCardsGraph = {
+  home: {
+    source:
+      '<App><StaticText name="Top portfolios" label="Top portfolios" x="20" y="150" width="220" height="30" />' +
+      '<XCUIElementTypeOther name="1&#10;Alpha Growth&#10;Creator One&#10;+42%" label="1&#10;Alpha Growth&#10;Creator One&#10;+42%" enabled="true" visible="true" accessible="true" x="20" y="200" width="350" height="90" />' +
+      '<XCUIElementTypeOther name="2&#10;Beta Income&#10;Creator Two&#10;+21%" label="2&#10;Beta Income&#10;Creator Two&#10;+21%" enabled="true" visible="true" accessible="true" x="20" y="310" width="350" height="90" />' +
+      '<XCUIElementTypeOther name="3&#10;Gamma Value&#10;Creator Three&#10;+9%" label="3&#10;Gamma Value&#10;Creator Three&#10;+9%" enabled="true" visible="true" accessible="true" x="20" y="420" width="350" height="90" /></App>',
+    coordinateTaps: {
+      '195,245': 'alpha',
+      '195,355': 'beta',
+      '195,465': 'gamma'
+    },
+    taps: {}
+  },
+  alpha: {
+    source:
+      '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" />' +
+      '<StaticText name="Alpha Growth" label="Alpha Growth" />' +
+      '<Button name="Performance" label="Performance" x="20" y="260" width="150" height="44" />' +
+      '<Button name="Activity" label="Activity" x="190" y="260" width="150" height="44" /></App>',
+    coordinateTaps: { '40,90': 'home', '95,282': 'alpha-performance', '265,282': 'alpha-activity' },
+    taps: {}
+  },
+  beta: {
+    source:
+      '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" />' +
+      '<StaticText name="Beta Income" label="Beta Income" />' +
+      '<Button name="Performance" label="Performance" x="20" y="260" width="150" height="44" />' +
+      '<Button name="Activity" label="Activity" x="190" y="260" width="150" height="44" /></App>',
+    coordinateTaps: { '40,90': 'home', '95,282': 'beta-performance', '265,282': 'beta-activity' },
+    taps: {}
+  },
+  gamma: {
+    source:
+      '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" />' +
+      '<StaticText name="Gamma Value" label="Gamma Value" />' +
+      '<Button name="Performance" label="Performance" x="20" y="260" width="150" height="44" />' +
+      '<Button name="Activity" label="Activity" x="190" y="260" width="150" height="44" /></App>',
+    coordinateTaps: { '40,90': 'home', '95,282': 'gamma-performance', '265,282': 'gamma-activity' },
+    taps: {}
+  },
+  'alpha-performance': {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /><StaticText name="Alpha performance" label="Alpha performance" /></App>',
+    coordinateTaps: { '40,90': 'alpha' },
+    taps: {}
+  },
+  'alpha-activity': {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /><StaticText name="Alpha activity" label="Alpha activity" /></App>',
+    coordinateTaps: { '40,90': 'alpha' },
+    taps: {}
+  },
+  'beta-performance': {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /><StaticText name="Beta performance" label="Beta performance" /></App>',
+    coordinateTaps: { '40,90': 'beta' },
+    taps: {}
+  },
+  'beta-activity': {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /><StaticText name="Beta activity" label="Beta activity" /></App>',
+    coordinateTaps: { '40,90': 'beta' },
+    taps: {}
+  },
+  'gamma-performance': {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /><StaticText name="Gamma performance" label="Gamma performance" /></App>',
+    coordinateTaps: { '40,90': 'gamma' },
+    taps: {}
+  },
+  'gamma-activity': {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /><StaticText name="Gamma activity" label="Gamma activity" /></App>',
+    coordinateTaps: { '40,90': 'gamma' },
+    taps: {}
+  }
+};
+
 const sectionFirstDuplicateVariantGraph = {
   ...sectionFirstGraph,
   'starter-duplicate': {
@@ -1474,6 +1547,42 @@ describe('app map execution', () => {
       'tap:Hidden CTA',
       'source:hidden-detail'
     ]);
+  });
+
+  it('skips sibling content cards once a representative detail template has been crawled', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.repeated-portfolio-cards',
+      crawl: true,
+      crawlDepth: 2,
+      crawlLimit: 12,
+      crawlSettleMs: 0
+    };
+
+    const adapter = new ScreenGraphAdapter(repeatedPortfolioCardsGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        actions: 3,
+        stopped_reason: 'complete'
+      }
+    });
+    expect(adapter.actions).toEqual([
+      'source:home',
+      'tap:195,245',
+      'source:alpha',
+      'tap:265,282',
+      'source:alpha-activity',
+      'tap:40,90',
+      'source:alpha',
+      'tap:40,90',
+      'source:home'
+    ]);
+    expect(adapter.actions).not.toContain('tap:195,355');
+    expect(adapter.actions).not.toContain('tap:195,465');
   });
 
   it('reuses learned bottom navigation destinations from a new tabbed screen variant', async () => {

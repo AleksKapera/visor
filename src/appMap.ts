@@ -1768,6 +1768,114 @@ function crawlCandidateOptions(variant: AppMapVariant): TapCandidateOptions {
   };
 }
 
+function crawlTemplateKey(variant: AppMapVariant): string {
+  const navigationTarget = preferredNavigationTarget(variant) ?? 'none';
+  const elementKeys = unique(variant.elements.flatMap((element) => crawlTemplateElementKeys(variant, element))).sort();
+  return signatureFor([`nav=${navigationTarget}`, ...elementKeys]);
+}
+
+function crawlTemplateElementKeys(variant: AppMapVariant, element: SourceElement): string[] {
+  if (element.visible === false || element.stable === false) {
+    return [];
+  }
+
+  const tag = element.tag.toLowerCase();
+  const layout = `${bucketNumber(element.width, 24)}x${bucketNumber(element.height, 24)}`;
+  if (isScrollableTag(tag)) {
+    return [`scroll:${layout}`];
+  }
+  if (isNavigationElement(variant, element)) {
+    return [`nav-control:${normalizeControlTarget(plainTapTargets(element)[0] ?? element.selector)}:${layout}`];
+  }
+  if (isHighValueContentCard(element)) {
+    return [`content-card:${contentLineCount(element)}:${layout}`];
+  }
+  if (isLikelyTapElement(element)) {
+    return [`tap:${tag}:${templateControlLabel(element)}:${layout}`];
+  }
+
+  return [];
+}
+
+function templateControlLabel(element: SourceElement): string {
+  if (isBackControl(element)) {
+    return 'back';
+  }
+
+  const target = normalizeControlTarget(plainTapTargets(element)[0] ?? element.selector);
+  const words = target.split(/\s+/).filter(Boolean);
+  if (target && words.length <= 4 && target.length <= 48) {
+    return target;
+  }
+
+  return 'control';
+}
+
+function repeatedContentCandidateKey(variant: AppMapVariant, candidate: TapCandidate): string | null {
+  const element = elementForTapCandidate(variant, candidate);
+  if (!element || !isHighValueContentCard(element)) {
+    return null;
+  }
+
+  const section = nearestSectionHeadingLabel(variant, element) ?? 'section=none';
+  const tag = element.tag.toLowerCase();
+  const shape = [
+    crawlTemplateKey(variant),
+    section,
+    tag,
+    `lines=${contentLineCount(element)}`,
+    `size=${bucketNumber(element.width, 24)}x${bucketNumber(element.height, 24)}`
+  ];
+  return signatureFor(shape);
+}
+
+function elementForTapCandidate(variant: AppMapVariant, candidate: TapCandidate): SourceElement | null {
+  const candidateCoordinate =
+    typeof candidate.args.x === 'number' && typeof candidate.args.y === 'number'
+      ? coordinateTarget(candidate.args)
+      : null;
+
+  for (const element of variant.elements) {
+    if (candidateCoordinate) {
+      const elementCoordinate = coordinateArgsForElement(element);
+      if (elementCoordinate && coordinateTarget(elementCoordinate) === candidateCoordinate) {
+        return element;
+      }
+    }
+
+    const target = plainTapTargets(element)[0] ?? element.selector;
+    if (target === candidate.target || element.targets.includes(candidate.target)) {
+      return element;
+    }
+  }
+
+  return null;
+}
+
+function nearestSectionHeadingLabel(variant: AppMapVariant, element: SourceElement): string | null {
+  if (element.y === null) {
+    return null;
+  }
+
+  const heading = variant.elements
+    .filter((candidate) => candidate.y !== null && candidate.y < (element.y as number) && isLikelySectionHeading(variant, candidate))
+    .sort((left, right) => (right.y ?? 0) - (left.y ?? 0))[0];
+  const label = heading?.labels[0];
+  return label ? `section=${normalizeControlTarget(label)}` : null;
+}
+
+function contentLineCount(element: SourceElement): number {
+  const lines = unique(element.labels.flatMap((label) => label.split(/\n+/).map((line) => line.trim()).filter(Boolean)));
+  return lines.length;
+}
+
+function bucketNumber(value: number | null, size: number): number {
+  if (value === null || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.round(value / size) * size;
+}
+
 function crawlScrollCandidates(context: AppMapContext, variant: AppMapVariant): TapCandidate[] {
   if (!context.adapter.capability().commands.includes('scroll') || !shouldExploreScroll(variant)) {
     return [];
@@ -2709,6 +2817,8 @@ async function restoreToVariant(
 
 async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Promise<CrawlSummary> {
   const visited = new Set<string>();
+  const visitedTemplates = new Set<string>();
+  const exploredRepeatedContentCandidates = new Set<string>();
   const attemptedTargets = new Map<string, Set<string>>();
   const restoreDiagnostics: RestoreDiagnostic[] = [];
   let restoreFailures = 0;
@@ -2740,6 +2850,11 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
       return origin;
     }
 
+    const originTemplateKey = crawlTemplateKey(origin.variant);
+    if (visitedTemplates.has(originTemplateKey) && !visited.has(origin.variant.id)) {
+      return origin;
+    }
+    visitedTemplates.add(originTemplateKey);
     visited.add(origin.variant.id);
     const attemptsForVariant = attemptedTargets.get(origin.variant.id) ?? new Set<string>();
     attemptedTargets.set(origin.variant.id, attemptsForVariant);
@@ -2830,6 +2945,10 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
     }
 
     for (const candidate of candidates) {
+      const repeatedCandidateKey = repeatedContentCandidateKey(origin.variant, candidate);
+      if (repeatedCandidateKey && exploredRepeatedContentCandidates.has(repeatedCandidateKey)) {
+        continue;
+      }
       if (actions >= context.options.crawlLimit) {
         stoppedReason = 'limit';
         return current;
@@ -2862,6 +2981,9 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
 
       recordEdgeSuccess(context, origin.variant, observed.variant, 'tap', args, true);
       visited.add(observed.variant.id);
+      if (repeatedCandidateKey && observed.variant.id !== origin.variant.id) {
+        exploredRepeatedContentCandidates.add(repeatedCandidateKey);
+      }
 
       if (observed.variant.id !== origin.variant.id && depth > 1) {
         const nestedCurrent = await visit(observed, depth - 1);
