@@ -159,6 +159,39 @@ interface RouteDriveResult {
   failedEdge?: AppMapEdge;
 }
 
+type RestoreAcceptedBy = 'exact' | 'contract' | 'similarity' | 'root' | 'root-route';
+
+interface RestoreMatch {
+  acceptedBy: RestoreAcceptedBy;
+  score?: number;
+}
+
+interface RestoreAttemptDiagnostic {
+  strategy: string;
+  command?: CommandName | 'act';
+  target?: string;
+  result: 'matched' | 'mismatched' | 'error';
+  observed_variant_id?: string;
+  observed_screen_id?: string;
+  accepted_by?: RestoreAcceptedBy;
+  error?: string;
+}
+
+interface RestoreDiagnostic {
+  from_variant_id: string;
+  target_variant_id: string;
+  result: 'restored' | 'failed';
+  accepted_by?: RestoreAcceptedBy;
+  attempts: RestoreAttemptDiagnostic[];
+}
+
+interface RestoreResult {
+  current: ObservedVariant;
+  restored: boolean;
+  acceptedBy?: RestoreAcceptedBy;
+  diagnostic: RestoreDiagnostic;
+}
+
 interface RepairResult {
   current: ObservedVariant;
   route: MapRouteStep[];
@@ -194,6 +227,8 @@ interface CrawlSummary {
   actions: number;
   variants: number;
   stopped_reason: string;
+  restore_failures?: number;
+  restore_diagnostics?: RestoreDiagnostic[];
 }
 
 interface TargetDescriptor {
@@ -628,8 +663,18 @@ function newVariant(map: AppMapFile, observation: ScreenObservation): AppMapVari
 function upsertVariant(map: AppMapFile, observation: ScreenObservation): ObservedVariant {
   let best: AppMapVariant | null = null;
   let bestScore = 0;
+  const observedNavigationTarget = preferredNavigationTargetForElements(observation.elements);
+  const observedHasBottomNavigation = navigationControlsForElements(observation.elements).length >= 2;
 
   for (const variant of map.variants) {
+    const variantNavigationTarget = preferredNavigationTarget(variant);
+    if (
+      observedNavigationTarget &&
+      variantNavigationTarget &&
+      observedNavigationTarget !== variantNavigationTarget
+    ) {
+      continue;
+    }
     const score =
       variant.normalized_fingerprint === observation.normalized_fingerprint
         ? 1
@@ -640,7 +685,8 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
     }
   }
 
-  if (!best || bestScore < 0.45) {
+  const requiredScore = observedHasBottomNavigation || (best ? hasBottomNavigation(best) : false) ? 0.62 : 0.45;
+  if (!best || bestScore < requiredScore) {
     return {
       observation,
       variant: newVariant(map, observation),
@@ -704,6 +750,46 @@ async function observeCurrentScreen(context: AppMapContext): Promise<ObservedVar
   const observed = upsertVariant(context.map, observation ?? observeSource(''));
   context.changed = true;
   return observed;
+}
+
+async function observeAfterAction(
+  context: AppMapContext,
+  target?: ObservedVariant
+): Promise<ObservedVariant> {
+  const observed = await observeCurrentScreen(context);
+  if (target && restoreMatch(observed, target)) {
+    return observed;
+  }
+  if (!shouldSettleObservation(observed.observation)) {
+    return observed;
+  }
+
+  try {
+    await delay(400);
+    const settled = await observeCurrentScreen(context);
+    if (target && restoreMatch(settled, target)) {
+      return settled;
+    }
+    if (settled.observation.fingerprint !== observed.observation.fingerprint) {
+      return settled;
+    }
+  } catch {
+    // Keep the immediate observation if a settle read fails.
+  }
+
+  return observed;
+}
+
+function shouldSettleObservation(observation: ScreenObservation): boolean {
+  if (isTransientObservation(observation)) {
+    return true;
+  }
+
+  const labels = observation.elements.flatMap((element) => element.labels.map(normalizeControlTarget));
+  const hasTransitionLabel = labels.some((label) =>
+    /\b(loading|syncing|refreshing|please wait|progress)\b/.test(label)
+  );
+  return hasTransitionLabel && observation.elements.length <= 3;
 }
 
 function delay(ms: number): Promise<void> {
@@ -1109,8 +1195,22 @@ function destinationTargetScore(map: AppMapFile, variant: AppMapVariant | undefi
   if (preferredNavigationTarget(variant) && score > 0) {
     score += 1;
   }
+  if (score > 0 && isFeedLikeVariant(variant) && !descriptorTargetsFeed(descriptor)) {
+    score -= 3;
+  }
 
   return score;
+}
+
+function isFeedLikeVariant(variant: AppMapVariant): boolean {
+  return contentLabels(variant).some((label) =>
+    /^(for you|activity|feed|latest|timeline|updates?)$/.test(label)
+  );
+}
+
+function descriptorTargetsFeed(descriptor: TargetDescriptor): boolean {
+  const value = normalizeControlTarget(descriptor.value ?? descriptor.target ?? '');
+  return /\b(activity|feed|post|comment|update|timeline)\b/.test(value);
 }
 
 function routeTargetScore(map: AppMapFile, route: AppMapEdge[], descriptor: TargetDescriptor): number {
@@ -1155,10 +1255,17 @@ function edgeNavigationTarget(map: AppMapFile, edge: AppMapEdge): string | null 
 }
 
 function contractTargets(variant: AppMapVariant): string[] {
-  return variant.elements
+  const navigationElements = new Set(navigationControls(variant).map((control) => control.element));
+  const contentTargets = variant.elements
     .filter((element) => element.stable)
-    .flatMap((element) => element.targets)
-    .slice(0, 8);
+    .filter((element) => !navigationElements.has(element))
+    .flatMap((element) =>
+      element.targets.filter((target) => !isGlobalIdentityLabel(normalizeControlTarget(target), element))
+    );
+  const fallbackTargets = variant.elements
+    .filter((element) => element.stable)
+    .flatMap((element) => element.targets);
+  return unique([...contentTargets, ...fallbackTargets]).slice(0, 8);
 }
 
 function matchingEdge(
@@ -1265,19 +1372,70 @@ function assertObservedEffect(
   throw new Error(`Action '${command}' on '${target}' had no effect: screen source did not change after the command`);
 }
 
-function satisfiesContract(edge: AppMapEdge, observed: ObservedVariant): boolean {
-  if (observed.variant.id === edge.destination_contract.variant_id) {
+function variantSatisfiesContract(variant: AppMapVariant, contract: DestinationContract): boolean {
+  if (variant.id === contract.variant_id) {
     return true;
   }
 
-  const observedTargets = new Set(observed.variant.elements.flatMap((element) => element.targets));
-  const required = edge.destination_contract.required_targets;
+  const observedTargets = new Set(variant.elements.flatMap((element) => element.targets));
+  const required = contract.required_targets;
   if (required.length === 0) {
-    return observed.variant.normalized_fingerprint === edge.destination_contract.normalized_fingerprint;
+    return variant.normalized_fingerprint === contract.normalized_fingerprint;
   }
 
   const matched = required.filter((target) => observedTargets.has(target)).length;
   return matched / required.length >= 0.6;
+}
+
+function restoreContractHasSharedAnchors(observed: AppMapVariant, target: AppMapVariant): boolean {
+  const observedTargets = new Set(observed.elements.flatMap((element) => element.targets));
+  const required = contractTargets(target);
+  if (required.length === 0) {
+    return false;
+  }
+
+  const matched = unique(required.filter((targetValue) => observedTargets.has(targetValue)));
+  return matched.length >= 2 && matched.length / required.length >= 0.25;
+}
+
+function restoreMatch(observed: ObservedVariant, target: ObservedVariant): RestoreMatch | null {
+  if (observed.variant.id === target.variant.id) {
+    return { acceptedBy: 'exact' };
+  }
+
+  const observedNavigationTarget = preferredNavigationTarget(observed.variant);
+  const targetNavigationTarget = preferredNavigationTarget(target.variant);
+  if (observedNavigationTarget && targetNavigationTarget && observedNavigationTarget !== targetNavigationTarget) {
+    return null;
+  }
+
+  const contract = {
+    variant_id: target.variant.id,
+    required_targets: contractTargets(target.variant),
+    normalized_fingerprint: target.variant.normalized_fingerprint
+  };
+  if (variantSatisfiesContract(observed.variant, contract)) {
+    return { acceptedBy: 'contract' };
+  }
+  if (
+    observedNavigationTarget &&
+    targetNavigationTarget &&
+    observedNavigationTarget === targetNavigationTarget &&
+    restoreContractHasSharedAnchors(observed.variant, target.variant)
+  ) {
+    return { acceptedBy: 'contract' };
+  }
+
+  const score = screenSimilarity(target.variant.elements, observed.variant.elements);
+  if (score >= 0.72) {
+    return { acceptedBy: 'similarity', score };
+  }
+
+  return null;
+}
+
+function satisfiesContract(edge: AppMapEdge, observed: ObservedVariant): boolean {
+  return variantSatisfiesContract(observed.variant, edge.destination_contract);
 }
 
 async function driveRoute(
@@ -1290,7 +1448,7 @@ async function driveRoute(
     let observed: ObservedVariant;
     try {
       await context.adapter[edge.command](args);
-      observed = await observeCurrentScreen(context);
+      observed = await observeAfterAction(context);
     } catch {
       demoteEdge(context, edge);
       try {
@@ -1429,12 +1587,16 @@ function crawlCandidateOptions(variant: AppMapVariant): TapCandidateOptions {
 }
 
 function preferredNavigationTarget(variant: AppMapVariant): string | null {
-  const controls = navigationControls(variant);
+  return preferredNavigationTargetForElements(variant.elements);
+}
+
+function preferredNavigationTargetForElements(elements: SourceElement[]): string | null {
+  const controls = navigationControlsForElements(elements);
   if (controls.length === 0) {
     return null;
   }
 
-  const labels = contentLabels(variant);
+  const labels = contentLabelsForElements(elements);
   const matched = controls.find((control) =>
     labels.some((label) => labelMatchesNavigationTarget(label, control.target))
   );
@@ -1450,9 +1612,14 @@ function hasBottomNavigation(variant: AppMapVariant): boolean {
 }
 
 function contentLabels(variant: AppMapVariant): string[] {
-  return variant.elements.flatMap((element) =>
+  return contentLabelsForElements(variant.elements);
+}
+
+function contentLabelsForElements(elements: SourceElement[]): string[] {
+  const navigationElements = new Set(navigationControlsForElements(elements).map((control) => control.element));
+  return elements.flatMap((element) =>
     element.labels
-      .filter(() => !isNavigationElement(variant, element))
+      .filter(() => !navigationElements.has(element))
       .filter((label) => !isGlobalIdentityLabel(label, element))
       .map(normalizeControlTarget)
   );
@@ -1524,6 +1691,10 @@ function labelMatchesNavigationTarget(label: string, target: string): boolean {
 
   const labelWords = new Set(label.split(/[^a-z0-9]+/).filter(Boolean));
   const targetWords = target.split(/[^a-z0-9]+/).filter(Boolean);
+  if (targetWords.length === 1) {
+    const words = Array.from(labelWords);
+    return words.length <= 2 && words[0] === targetWords[0];
+  }
   return targetWords.length > 0 && targetWords.every((word) => labelWords.has(word));
 }
 
@@ -1959,51 +2130,80 @@ export async function runMappedCommand(
   return { ...details, map: metadata };
 }
 
-async function restoreToVariant(
+function restoreAttemptDiagnostic(
+  strategy: string,
+  result: 'matched' | 'mismatched' | 'error',
+  observed?: ObservedVariant,
+  match?: RestoreMatch | null,
+  target?: string,
+  command?: CommandName | 'act',
+  error?: unknown
+): RestoreAttemptDiagnostic {
+  return {
+    strategy,
+    result,
+    ...(command ? { command } : {}),
+    ...(target ? { target } : {}),
+    ...(observed
+      ? {
+          observed_variant_id: observed.variant.id,
+          observed_screen_id: observed.variant.screen_id
+        }
+      : {}),
+    ...(match ? { accepted_by: match.acceptedBy } : {}),
+    ...(error instanceof Error ? { error: error.message } : {})
+  };
+}
+
+function makeRestoreDiagnostic(from: ObservedVariant, target: ObservedVariant): RestoreDiagnostic {
+  return {
+    from_variant_id: from.variant.id,
+    target_variant_id: target.variant.id,
+    result: 'failed',
+    attempts: []
+  };
+}
+
+async function tryTapRestoreCandidate(
   context: AppMapContext,
   current: ObservedVariant,
-  target: ObservedVariant
-): Promise<ObservedVariant> {
-  if (current.variant.id === target.variant.id) {
-    return current;
-  }
-
-  const restoreTargets = safeTapCandidates(current.variant).filter((candidate) =>
-    /^(back|close|dismiss|done)$/i.test(candidate.target)
-  );
-
-  for (const restoreCandidate of restoreTargets) {
+  target: ObservedVariant,
+  candidate: TapCandidate,
+  strategy: string,
+  diagnostic: RestoreDiagnostic
+): Promise<{ current: ObservedVariant; match: RestoreMatch | null }> {
+  const args = candidate.args;
+  try {
+    await context.adapter.tap(args);
+    const observed = await observeAfterAction(context, target);
+    recordEdgeSuccess(context, current.variant, observed.variant, 'tap', args, true);
+    const match = restoreMatch(observed, target);
+    diagnostic.attempts.push(
+      restoreAttemptDiagnostic(
+        strategy,
+        match ? 'matched' : 'mismatched',
+        observed,
+        match,
+        targetDescriptor('tap', args).target ?? candidate.target,
+        'tap'
+      )
+    );
+    return { current: observed, match };
+  } catch (error) {
+    diagnostic.attempts.push(
+      restoreAttemptDiagnostic(strategy, 'error', undefined, null, candidate.target, 'tap', error)
+    );
     try {
-      const args = restoreCandidate.args;
-      await context.adapter.tap(args);
-      let observed = await observeCurrentScreen(context);
-      if (observed.variant.id !== target.variant.id) {
-        try {
-          await delay(400);
-          const settled = await observeCurrentScreen(context);
-          if (settled.observation.fingerprint !== observed.observation.fingerprint) {
-            observed = settled;
-          }
-        } catch {
-          // Keep the immediate observation if a settle read fails.
-        }
-      }
-      recordEdgeSuccess(context, current.variant, observed.variant, 'tap', args, true);
-      if (observed.variant.id === target.variant.id) {
-        return observed;
-      }
-      current = observed;
+      return { current: await observeCurrentScreen(context), match: null };
     } catch {
-      try {
-        current = await observeCurrentScreen(context);
-      } catch {
-        // Keep the last known screen and try the next restoration strategy.
-      }
+      return { current, match: null };
     }
   }
+}
 
+function targetRestoreCandidates(current: ObservedVariant, target: ObservedVariant): TapCandidate[] {
   const preferredTarget = preferredNavigationTarget(target.variant);
-  const targetRestoreCandidates = safeTapCandidates(current.variant).filter((candidate) => {
+  return safeTapCandidates(current.variant).filter((candidate) => {
     if (/^(back|close|dismiss|done)$/i.test(candidate.target)) {
       return false;
     }
@@ -2017,65 +2217,210 @@ async function restoreToVariant(
     const descriptor = targetDescriptor('tap', { target: candidate.target });
     return descriptor.kind !== 'unknown' && variantContainsTarget(target.variant, descriptor);
   });
+}
 
-  for (const restoreCandidate of targetRestoreCandidates) {
-    try {
-      const args = restoreCandidate.args;
-      await context.adapter.tap(args);
-      let observed = await observeCurrentScreen(context);
-      if (observed.variant.id !== target.variant.id) {
-        try {
-          await delay(400);
-          const settled = await observeCurrentScreen(context);
-          if (settled.observation.fingerprint !== observed.observation.fingerprint) {
-            observed = settled;
-          }
-        } catch {
-          // Keep the immediate observation if a settle read fails.
-        }
+function navigationResetCandidates(current: ObservedVariant, root: ObservedVariant): TapCandidate[] {
+  const rootTarget = preferredNavigationTarget(root.variant);
+  if (!rootTarget) {
+    return [];
+  }
+  return safeTapCandidates(current.variant).filter(
+    (candidate) => normalizeControlTarget(candidate.target) === rootTarget
+  );
+}
+
+function shortestRouteToVariant(map: AppMapFile, fromVariantId: string, toVariantId: string): AppMapEdge[] | null {
+  if (fromVariantId === toVariantId) {
+    return [];
+  }
+
+  const visited = new Set<string>([fromVariantId]);
+  const queue: Array<{ variantId: string; edges: AppMapEdge[] }> = [{ variantId: fromVariantId, edges: [] }];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      break;
+    }
+    const variant = map.variants.find((candidate) => candidate.id === current.variantId);
+    const outgoing = [
+      ...map.edges,
+      ...navigationVirtualEdges(map, variant)
+    ]
+      .filter((edge) => edge.from_variant_id === current.variantId && !edge.stale && edge.confidence >= 0.25 && replayableEdge(edge))
+      .sort((left, right) => right.confidence - left.confidence);
+    for (const edge of outgoing) {
+      if (visited.has(edge.to_variant_id)) {
+        continue;
       }
-      recordEdgeSuccess(context, current.variant, observed.variant, 'tap', args, true);
-      if (observed.variant.id === target.variant.id) {
-        return observed;
+      const edges = [...current.edges, edge];
+      if (edge.to_variant_id === toVariantId) {
+        return edges;
       }
-      current = observed;
-    } catch {
-      try {
-        current = await observeCurrentScreen(context);
-      } catch {
-        // Keep the last known screen and try the next restoration strategy.
+      visited.add(edge.to_variant_id);
+      queue.push({ variantId: edge.to_variant_id, edges });
+    }
+  }
+
+  return null;
+}
+
+async function restoreViaRootRoute(
+  context: AppMapContext,
+  current: ObservedVariant,
+  target: ObservedVariant,
+  root: ObservedVariant,
+  diagnostic: RestoreDiagnostic
+): Promise<RestoreResult | null> {
+  let resetCurrent = current;
+  const rootMatch = restoreMatch(resetCurrent, root);
+  if (!rootMatch) {
+    for (const candidate of navigationResetCandidates(resetCurrent, root)) {
+      const restored = await tryTapRestoreCandidate(context, resetCurrent, root, candidate, 'root-navigation', diagnostic);
+      resetCurrent = restored.current;
+      if (restored.match) {
+        break;
       }
+    }
+  }
+
+  const matchedRoot = restoreMatch(resetCurrent, root);
+  if (!matchedRoot) {
+    return null;
+  }
+  if (restoreMatch(resetCurrent, target)) {
+    diagnostic.result = 'restored';
+    diagnostic.accepted_by = 'root';
+    return { current: target, restored: true, acceptedBy: 'root', diagnostic };
+  }
+
+  const route = shortestRouteToVariant(context.map, root.variant.id, target.variant.id);
+  if (!route || route.length === 0) {
+    return null;
+  }
+
+  const driven = await driveRoute(context, root, route);
+  const match = restoreMatch(driven.current, target);
+  diagnostic.attempts.push(
+    restoreAttemptDiagnostic(
+      'root-route',
+      match ? 'matched' : 'mismatched',
+      driven.current,
+      match ? { ...match, acceptedBy: 'root-route' } : null,
+      route.map((edge) => edge.target ?? edge.command).join(' -> '),
+      'tap'
+    )
+  );
+  if (!match) {
+    return { current: driven.current, restored: false, diagnostic };
+  }
+
+  diagnostic.result = 'restored';
+  diagnostic.accepted_by = 'root-route';
+  return { current: target, restored: true, acceptedBy: 'root-route', diagnostic };
+}
+
+async function restoreToVariant(
+  context: AppMapContext,
+  current: ObservedVariant,
+  target: ObservedVariant,
+  root?: ObservedVariant
+): Promise<RestoreResult> {
+  const diagnostic = makeRestoreDiagnostic(current, target);
+  const initialMatch = restoreMatch(current, target);
+  if (initialMatch) {
+    diagnostic.result = 'restored';
+    diagnostic.accepted_by = initialMatch.acceptedBy;
+    return { current: target, restored: true, acceptedBy: initialMatch.acceptedBy, diagnostic };
+  }
+
+  const restoreTargets = safeTapCandidates(current.variant).filter((candidate) =>
+    /^(back|close|dismiss|done)$/i.test(candidate.target)
+  );
+
+  for (const restoreCandidate of restoreTargets) {
+    const restored = await tryTapRestoreCandidate(
+      context,
+      current,
+      target,
+      restoreCandidate,
+      'dismiss-control',
+      diagnostic
+    );
+    current = restored.current;
+    if (restored.match) {
+      diagnostic.result = 'restored';
+      diagnostic.accepted_by = restored.match.acceptedBy;
+      return { current: target, restored: true, acceptedBy: restored.match.acceptedBy, diagnostic };
+    }
+  }
+
+  for (const restoreCandidate of targetRestoreCandidates(current, target)) {
+    const restored = await tryTapRestoreCandidate(
+      context,
+      current,
+      target,
+      restoreCandidate,
+      'target-navigation',
+      diagnostic
+    );
+    current = restored.current;
+    if (restored.match) {
+      diagnostic.result = 'restored';
+      diagnostic.accepted_by = restored.match.acceptedBy;
+      return { current: target, restored: true, acceptedBy: restored.match.acceptedBy, diagnostic };
     }
   }
 
   try {
     await context.adapter.act({ name: 'back' });
-    let observed = await observeCurrentScreen(context);
-    if (observed.variant.id !== target.variant.id) {
-      try {
-        await delay(400);
-        const settled = await observeCurrentScreen(context);
-        if (settled.observation.fingerprint !== observed.observation.fingerprint) {
-          observed = settled;
-        }
-      } catch {
-        // Keep the immediate observation if a settle read fails.
-      }
+    const observed = await observeAfterAction(context, target);
+    const match = restoreMatch(observed, target);
+    diagnostic.attempts.push(
+      restoreAttemptDiagnostic('platform-back', match ? 'matched' : 'mismatched', observed, match, 'back', 'act')
+    );
+    if (match) {
+      diagnostic.result = 'restored';
+      diagnostic.accepted_by = match.acceptedBy;
+      return { current: target, restored: true, acceptedBy: match.acceptedBy, diagnostic };
     }
-    if (observed.variant.id === target.variant.id) {
-      return observed;
-    }
-    return observed;
-  } catch {
-    return current;
+    current = observed;
+  } catch (error) {
+    diagnostic.attempts.push(restoreAttemptDiagnostic('platform-back', 'error', undefined, null, 'back', 'act', error));
   }
+
+  if (root) {
+    const rooted = await restoreViaRootRoute(context, current, target, root, diagnostic);
+    if (rooted) {
+      return rooted;
+    }
+  }
+
+  return { current, restored: false, diagnostic };
 }
 
 async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Promise<CrawlSummary> {
   const visited = new Set<string>();
   const attemptedTargets = new Map<string, Set<string>>();
+  const restoreDiagnostics: RestoreDiagnostic[] = [];
+  let restoreFailures = 0;
   let actions = 0;
   let stoppedReason = 'complete';
+
+  const restore = async (current: ObservedVariant, target: ObservedVariant): Promise<RestoreResult> => {
+    const result = await restoreToVariant(context, current, target, start);
+    if (result.diagnostic.attempts.length > 0 || result.diagnostic.accepted_by) {
+      restoreDiagnostics.push(result.diagnostic);
+    }
+    if (!result.restored) {
+      restoreFailures += 1;
+    }
+    return result;
+  };
+  const markPartial = (): void => {
+    if (stoppedReason === 'complete') {
+      stoppedReason = 'partial';
+    }
+  };
 
   const visit = async (origin: ObservedVariant, depth: number): Promise<ObservedVariant> => {
     if (depth <= 0) {
@@ -2098,10 +2443,15 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
         stoppedReason = 'limit';
         return current;
       }
-      if (current.variant.id !== origin.variant.id) {
+      if (!restoreMatch(current, origin)) {
+        if (restoreMatch(current, start)) {
+          markPartial();
+          return start;
+        }
         stoppedReason = 'restore_failed';
         return current;
       }
+      current = origin;
 
       attemptsForVariant.add(candidate.key);
       const args = candidate.args;
@@ -2109,7 +2459,7 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
       try {
         await context.adapter.tap(args);
         actions += 1;
-        observed = await observeCurrentScreen(context);
+        observed = await observeAfterAction(context);
       } catch {
         try {
           current = await observeCurrentScreen(context);
@@ -2124,16 +2474,30 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
 
       if (observed.variant.id !== origin.variant.id && depth > 1) {
         const nestedCurrent = await visit(observed, depth - 1);
-        current = await restoreToVariant(context, nestedCurrent, origin);
-        if (current.variant.id !== origin.variant.id) {
+        const restored = await restore(nestedCurrent, origin);
+        current = restored.current;
+        if (!restored.restored) {
+          if (restoreMatch(current, start)) {
+            markPartial();
+            return start;
+          }
           stoppedReason = 'restore_failed';
           return current;
         }
       } else {
-        current = observed.variant.id === origin.variant.id
-          ? observed
-          : await restoreToVariant(context, observed, origin);
-        if (current.variant.id !== origin.variant.id) {
+        const restored = restoreMatch(observed, origin)
+          ? { current: origin, restored: true } as RestoreResult
+          : await restore(observed, origin);
+        current = restored.current;
+        if (!restored.restored) {
+          if (restoreMatch(current, start)) {
+            markPartial();
+            if (restoreMatch(origin, start)) {
+              current = origin;
+              continue;
+            }
+            return start;
+          }
           stoppedReason = 'restore_failed';
           return current;
         }
@@ -2149,7 +2513,9 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
     enabled: true,
     actions,
     variants: visited.size,
-    stopped_reason: stoppedReason
+    stopped_reason: stoppedReason,
+    ...(restoreFailures > 0 ? { restore_failures: restoreFailures } : {}),
+    ...(restoreDiagnostics.length > 0 ? { restore_diagnostics: restoreDiagnostics } : {})
   };
 }
 

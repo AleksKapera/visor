@@ -733,6 +733,109 @@ const genericCommerceSectionGraph = {
   }
 };
 
+function tabbedSource(body: string): string {
+  return (
+    '<App>' +
+    body +
+    '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="96" height="40" />' +
+    '<Button name="Catalog&#10;Catalog" label="Catalog&#10;Catalog" x="120" y="787" width="96" height="40" />' +
+    '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="231" y="787" width="96" height="40" />' +
+    '</App>'
+  );
+}
+
+const equivalentRestoreCrawlGraph = {
+  home: {
+    source: [
+      tabbedSource(
+        '<StaticText name="Home Feed" label="Home Feed" />' +
+          '<StaticText name="Opening Snapshot A" label="Opening Snapshot A" />' +
+          '<StaticText name="Opening Snapshot B" label="Opening Snapshot B" />' +
+          '<StaticText name="Opening Snapshot C" label="Opening Snapshot C" />' +
+          '<StaticText name="Opening Snapshot D" label="Opening Snapshot D" />' +
+          '<StaticText name="Opening Snapshot E" label="Opening Snapshot E" />' +
+          '<StaticText name="Opening Snapshot F" label="Opening Snapshot F" />' +
+          '<StaticText name="Opening Snapshot G" label="Opening Snapshot G" />' +
+          '<StaticText name="Opening Snapshot H" label="Opening Snapshot H" />'
+      ),
+      ...Array.from({ length: 6 }, () =>
+        tabbedSource(
+          '<StaticText name="Home Feed" label="Home Feed" />' +
+            '<StaticText name="Refreshed Snapshot I" label="Refreshed Snapshot I" />' +
+            '<StaticText name="Refreshed Snapshot J" label="Refreshed Snapshot J" />' +
+            '<StaticText name="Refreshed Snapshot K" label="Refreshed Snapshot K" />' +
+            '<StaticText name="Refreshed Snapshot L" label="Refreshed Snapshot L" />' +
+            '<StaticText name="Refreshed Snapshot M" label="Refreshed Snapshot M" />' +
+            '<StaticText name="Refreshed Snapshot N" label="Refreshed Snapshot N" />' +
+            '<StaticText name="Refreshed Snapshot O" label="Refreshed Snapshot O" />' +
+            '<StaticText name="Refreshed Snapshot P" label="Refreshed Snapshot P" />'
+        )
+      )
+    ],
+    coordinateTaps: { '168,807': 'catalog', '279,807': 'premium' },
+    taps: {}
+  },
+  catalog: {
+    source: tabbedSource('<StaticText name="Catalog Screen" label="Catalog Screen" />'),
+    coordinateTaps: { '57,807': 'home', '279,807': 'premium' },
+    taps: {}
+  },
+  premium: {
+    source: tabbedSource('<StaticText name="Premium Screen" label="Premium Screen" />'),
+    coordinateTaps: { '57,807': 'home', '168,807': 'catalog' },
+    taps: {}
+  }
+};
+
+const rootReplayRestoreCrawlGraph = {
+  home: {
+    source:
+      tabbedSource(
+        '<StaticText name="Dashboard Feed" label="Dashboard Feed" />' +
+          '<StaticText name="Premium market note" label="Premium market note" />'
+      ),
+    coordinateTaps: { '168,807': 'catalog', '279,807': 'premium' },
+    taps: {}
+  },
+  catalog: {
+    source:
+      tabbedSource(
+        '<StaticText name="Catalog Screen" label="Catalog Screen" />' +
+          '<XCUIElementTypeOther name="Trail Jacket&#10;$120" label="Trail Jacket&#10;$120" enabled="true" visible="true" accessible="true" x="20" y="205" width="330" height="88" />'
+      ),
+    coordinateTaps: { '185,249': 'product', '57,807': 'home', '279,807': 'premium' },
+    taps: {}
+  },
+  product: {
+    source:
+      '<App><StaticText name="Trail Jacket detail" label="Trail Jacket detail" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="96" height="40" /></App>',
+    coordinateTaps: { '57,807': 'home' },
+    taps: {}
+  },
+  premium: {
+    source: tabbedSource('<StaticText name="Premium Screen" label="Premium Screen" />'),
+    coordinateTaps: { '57,807': 'home', '168,807': 'catalog' },
+    taps: {}
+  }
+};
+
+const settledDestinationCrawlGraph = {
+  home: {
+    source: tabbedSource('<StaticText name="Home Feed" label="Home Feed" />'),
+    coordinateTaps: { '168,807': 'catalog' },
+    taps: {}
+  },
+  catalog: {
+    source: [
+      '<App><StaticText name="Loading catalog" label="Loading catalog" /></App>',
+      tabbedSource('<StaticText name="Catalog Ready" label="Catalog Ready" />')
+    ],
+    coordinateTaps: { '57,807': 'home' },
+    taps: {}
+  }
+};
+
 const sectionFirstDuplicateVariantGraph = {
   ...sectionFirstGraph,
   'starter-duplicate': {
@@ -1050,6 +1153,109 @@ describe('app map execution', () => {
         { command: 'tap', target: 'x=195,y=405' }
       ]
     });
+  });
+
+  it('continues crawling when restore lands on an equivalent refreshed variant', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.equivalent-restore-crawl',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 2
+    };
+
+    const adapter = new ScreenGraphAdapter(equivalentRestoreCrawlGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+    const crawl = discovery.crawl as {
+      actions: number;
+      stopped_reason: string;
+      restore_diagnostics?: Array<{ result: string; accepted_by?: string }>;
+    };
+
+    expect(crawl).toMatchObject({
+      actions: 2,
+      stopped_reason: 'complete'
+    });
+    expect(crawl.restore_diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          result: 'restored',
+          accepted_by: 'contract'
+        })
+      ])
+    );
+    expect(adapter.actions).toEqual(expect.arrayContaining(['tap:168,807', 'tap:279,807']));
+  });
+
+  it('recovers a nested restore by resetting to the root tab and replaying the path', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.root-replay-restore-crawl',
+      crawl: true,
+      crawlDepth: 2,
+      crawlLimit: 3
+    };
+
+    const adapter = new ScreenGraphAdapter(rootReplayRestoreCrawlGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+    const crawl = discovery.crawl as {
+      actions: number;
+      stopped_reason: string;
+      restore_diagnostics?: Array<{ result: string; accepted_by?: string }>;
+    };
+
+    expect(crawl).toMatchObject({
+      actions: 3,
+      stopped_reason: 'limit'
+    });
+    expect(crawl.restore_diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          result: 'restored',
+          accepted_by: 'root-route'
+        })
+      ])
+    );
+    expect(adapter.actions).toEqual(
+      expect.arrayContaining(['tap:168,807', 'tap:185,249', 'tap:57,807', 'tap:279,807'])
+    );
+  });
+
+  it('waits past loading source captures before recording a crawled destination', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.settled-destination-crawl',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 1
+    };
+
+    const adapter = new ScreenGraphAdapter(settledDestinationCrawlGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        actions: 1,
+        stopped_reason: 'limit'
+      }
+    });
+
+    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
+    const persisted = JSON.parse(fs.readFileSync(path.join(mapRoot, mapFile), 'utf8')) as {
+      variants: Array<{ id: string; elements: Array<{ labels: string[] }> }>;
+      edges: Array<{ target?: string; to_variant_id: string }>;
+    };
+    const catalogEdge = persisted.edges.find((edge) => edge.target === 'x=168,y=807');
+    const destination = persisted.variants.find((variant) => variant.id === catalogEdge?.to_variant_id);
+    const labels = destination?.elements.flatMap((element) => element.labels) ?? [];
+
+    expect(labels).toContain('Catalog Ready');
   });
 
   it('reuses learned bottom navigation destinations from a new tabbed screen variant', async () => {
