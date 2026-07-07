@@ -59,10 +59,34 @@ interface AppMapVariant {
   normalized_fingerprint: string;
   elements: SourceElement[];
   element_keys: string[];
+  actions: AppMapAction[];
   auth_required: boolean;
   observations: number;
   confidence: number;
   last_observed_at: string;
+}
+
+interface AppMapActionScope {
+  kind: 'content' | 'section' | 'screen';
+  label?: string;
+}
+
+interface AppMapAction {
+  command: 'tap';
+  intent: string;
+  label: string;
+  target?: string;
+  args: Record<string, unknown>;
+  safety: ControlSafety;
+  scope?: AppMapActionScope;
+  navigation_target?: string;
+  source: {
+    tag: string;
+    x: number | null;
+    y: number | null;
+    width: number | null;
+    height: number | null;
+  };
 }
 
 interface DestinationContract {
@@ -333,8 +357,15 @@ function readMap(filePath: string, platform: Platform, appId: string): LoadedApp
       return { map: newMap(platform, appId), scrubbed: false };
     }
     const originalEdgeCount = parsed.edges.length;
+    let enrichedActions = false;
+    for (const variant of parsed.variants) {
+      if (!Array.isArray(variant.actions)) {
+        variant.actions = actionAffordancesForElements(variant.elements);
+        enrichedActions = true;
+      }
+    }
     parsed.edges = parsed.edges.filter((edge) => !isValueBearingAction(edge.command, edge.args));
-    return { map: parsed, scrubbed: parsed.edges.length !== originalEdgeCount };
+    return { map: parsed, scrubbed: parsed.edges.length !== originalEdgeCount || enrichedActions };
   } catch {
     return { map: newMap(platform, appId), scrubbed: false };
   }
@@ -697,6 +728,7 @@ function newVariant(map: AppMapFile, observation: ScreenObservation): AppMapVari
     normalized_fingerprint: observation.normalized_fingerprint,
     elements: observation.elements,
     element_keys: observation.element_keys,
+    actions: actionAffordancesForElements(observation.elements),
     auth_required: observation.auth_required,
     observations: 1,
     confidence: 0.6,
@@ -762,6 +794,7 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
   best.normalized_fingerprint = observation.normalized_fingerprint;
   best.elements = observation.elements;
   best.element_keys = observation.element_keys;
+  best.actions = actionAffordancesForElements(observation.elements);
   best.auth_required = observation.auth_required;
   best.observations += 1;
   best.confidence = Math.min(1, best.confidence + 0.05);
@@ -1740,6 +1773,150 @@ function isHighValueContentCard(element: SourceElement): boolean {
     (element.tag.toLowerCase().includes('other') && area >= 3000) ||
     ((element.width ?? 0) >= 120 && (element.height ?? 0) >= 64 && element.labels.length > 0)
   );
+}
+
+function actionAffordancesForElements(elements: SourceElement[]): AppMapAction[] {
+  const navigationElements = new Set(navigationControlsForElements(elements).map((control) => control.element));
+  const navigationTarget = preferredNavigationTargetForElements(elements) ?? undefined;
+  const actions: AppMapAction[] = [];
+  const seen = new Set<string>();
+
+  const candidates = [...elements]
+    .filter((element) => element.safety === 'safe' && element.stable && isLikelyTapElement(element))
+    .filter((element) => !navigationElements.has(element) && !isBackControl(element))
+    .sort((left, right) => (left.y ?? 0) - (right.y ?? 0) || (left.x ?? 0) - (right.x ?? 0));
+
+  for (const element of candidates) {
+    const label = actionLabel(element);
+    if (!label) {
+      continue;
+    }
+
+    const coordinateArgs = coordinateArgsForElement(element);
+    const stableTarget = plainTapTargets(element)[0] ?? element.selector;
+    const args = coordinateArgs ?? { target: stableTarget };
+    const target = coordinateArgs ? coordinateTarget(coordinateArgs) : stableTarget;
+    const scope = actionScopeForElement(elements, element);
+    const dedupeKey = [
+      actionIntent(label),
+      target,
+      scope?.kind ?? '',
+      scope?.label ?? ''
+    ].join('|');
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+
+    actions.push({
+      command: 'tap',
+      intent: actionIntent(label),
+      label,
+      target,
+      args,
+      safety: element.safety,
+      ...(scope ? { scope } : {}),
+      ...(navigationTarget ? { navigation_target: navigationTarget } : {}),
+      source: {
+        tag: element.tag,
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height
+      }
+    });
+  }
+
+  return actions;
+}
+
+function actionLabel(element: SourceElement): string {
+  const target = plainTapTargets(element)[0] ?? element.labels[0] ?? element.selector;
+  return target.split(/\n+/).map((line) => line.trim()).filter(Boolean)[0] ?? target.trim();
+}
+
+function actionIntent(label: string): string {
+  const normalized = normalizeControlTarget(label);
+  const intentPatterns: Array<[string, RegExp]> = [
+    ['like', /\blike\b/],
+    ['comment', /\bcomment\b/],
+    ['share', /\bshare\b/],
+    ['save', /\b(save|bookmark)\b/],
+    ['follow', /\bfollow\b/],
+    ['watchlist', /\bwatchlist\b/],
+    ['search', /\bsearch\b/],
+    ['create', /\b(create|new)\b/],
+    ['filter', /\bfilter\b/],
+    ['sort', /\bsort\b/],
+    ['dismiss', /\b(close|dismiss|skip)\b/]
+  ];
+  const matched = intentPatterns.find(([, pattern]) => pattern.test(normalized));
+  if (matched) {
+    return matched[0];
+  }
+
+  return normalized.split(/[^a-z0-9]+/).filter(Boolean)[0] ?? 'tap';
+}
+
+function actionScopeForElement(elements: SourceElement[], element: SourceElement): AppMapActionScope | null {
+  const content = nearestContentScopeElement(elements, element);
+  if (content) {
+    return {
+      kind: 'content',
+      label: content.labels[0]
+    };
+  }
+
+  const section = nearestActionSectionElement(elements, element);
+  if (section) {
+    return {
+      kind: 'section',
+      label: section.labels[0]
+    };
+  }
+
+  return { kind: 'screen' };
+}
+
+function nearestContentScopeElement(elements: SourceElement[], element: SourceElement): SourceElement | null {
+  if (element.y === null) {
+    return null;
+  }
+
+  return elements
+    .filter((candidate) => candidate !== element && candidate.y !== null && candidate.height !== null)
+    .filter((candidate) => isHighValueContentCard(candidate))
+    .filter((candidate) => {
+      const candidateTop = candidate.y as number;
+      const candidateBottom = candidateTop + Math.max(0, candidate.height ?? 0);
+      return candidateTop <= (element.y as number) && candidateBottom + 96 >= (element.y as number);
+    })
+    .sort((left, right) => (right.y ?? 0) - (left.y ?? 0))[0] ?? null;
+}
+
+function nearestActionSectionElement(elements: SourceElement[], element: SourceElement): SourceElement | null {
+  if (element.y === null) {
+    return null;
+  }
+
+  return elements
+    .filter((candidate) => candidate.y !== null && candidate.y < (element.y as number) && isActionSectionElement(candidate))
+    .sort((left, right) => (right.y ?? 0) - (left.y ?? 0))[0] ?? null;
+}
+
+function isActionSectionElement(element: SourceElement): boolean {
+  if (isLikelyTapElement(element) || element.labels.length === 0) {
+    return false;
+  }
+
+  return element.labels.some((label) => {
+    const normalized = normalizeControlTarget(label);
+    if (!/[a-z]/i.test(normalized)) {
+      return false;
+    }
+    const words = normalized.split(/\s+/).filter(Boolean);
+    return words.length <= 8;
+  });
 }
 
 function normalizeControlTarget(target: string): string {

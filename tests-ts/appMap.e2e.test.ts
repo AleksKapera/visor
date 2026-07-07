@@ -991,6 +991,22 @@ const repeatedPortfolioCardsGraph = {
   }
 };
 
+const activityActionAffordanceGraph = {
+  activity: {
+    source:
+      '<App><StaticText name="Activity" label="Activity" x="20" y="92" width="160" height="30" />' +
+      '<StaticText name="For You" label="For You" x="20" y="140" width="120" height="28" />' +
+      '<XCUIElementTypeOther name="Feed Post&#10;Creator One&#10;Bought AAPL" label="Feed Post&#10;Creator One&#10;Bought AAPL" enabled="true" visible="true" accessible="true" x="20" y="190" width="350" height="180" />' +
+      '<Button name="Like activity&#10;Like activity" label="Like activity&#10;Like activity" x="28" y="382" width="64" height="44" />' +
+      '<Button name="Comment on activity&#10;Comment on activity" label="Comment on activity&#10;Comment on activity" x="112" y="382" width="92" height="44" />' +
+      '<Button name="Share activity&#10;Share activity" label="Share activity&#10;Share activity" x="224" y="382" width="74" height="44" />' +
+      '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
+      '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
+    coordinateTaps: {},
+    taps: {}
+  }
+};
+
 const sectionFirstDuplicateVariantGraph = {
   ...sectionFirstGraph,
   'starter-duplicate': {
@@ -1583,6 +1599,58 @@ describe('app map execution', () => {
     ]);
     expect(adapter.actions).not.toContain('tap:195,355');
     expect(adapter.actions).not.toContain('tap:195,465');
+  });
+
+  it('persists screen action affordances with content scope for feed controls', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.activity-actions'
+    };
+
+    await discoverAppMap(new ScreenGraphAdapter(activityActionAffordanceGraph, 'activity'), mapOptions);
+
+    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
+    const persisted = JSON.parse(fs.readFileSync(path.join(mapRoot, mapFile), 'utf8')) as {
+      variants: Array<{
+        actions?: Array<{
+          intent: string;
+          command: string;
+          label: string;
+          target?: string;
+          navigation_target?: string;
+          scope?: { kind: string; label?: string };
+        }>;
+      }>;
+    };
+    const actions = persisted.variants.flatMap((variant) => variant.actions ?? []);
+
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          intent: 'like',
+          command: 'tap',
+          label: 'Like activity',
+          target: 'x=60,y=404',
+          navigation_target: 'activity',
+          scope: expect.objectContaining({
+            kind: 'content',
+            label: expect.stringContaining('Feed Post')
+          })
+        }),
+        expect.objectContaining({
+          intent: 'comment',
+          label: 'Comment on activity',
+          scope: expect.objectContaining({ kind: 'content' })
+        }),
+        expect.objectContaining({
+          intent: 'share',
+          label: 'Share activity',
+          scope: expect.objectContaining({ kind: 'content' })
+        })
+      ])
+    );
   });
 
   it('reuses learned bottom navigation destinations from a new tabbed screen variant', async () => {

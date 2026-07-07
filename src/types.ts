@@ -96,6 +96,7 @@ export interface MapExecutionSummary {
     screens: number;
     variants: number;
     edges: number;
+    actions: number;
     auth_required_variants: number;
     updated_at?: string;
   };

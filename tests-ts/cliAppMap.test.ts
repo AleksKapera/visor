@@ -311,8 +311,18 @@ describe('cli app map options', () => {
           { id: 'screen_2', variant_ids: ['variant_2'] }
         ],
         variants: [
-          { id: 'variant_1', screen_id: 'screen_1', auth_required: false },
-          { id: 'variant_2', screen_id: 'screen_2', auth_required: true }
+          {
+            id: 'variant_1',
+            screen_id: 'screen_1',
+            auth_required: false,
+            actions: [{ intent: 'like' }, { intent: 'comment' }]
+          },
+          {
+            id: 'variant_2',
+            screen_id: 'screen_2',
+            auth_required: true,
+            actions: [{ intent: 'share' }]
+          }
         ],
         edges: [
           { id: 'edge_1', from_variant_id: 'variant_1', to_variant_id: 'variant_2' },
@@ -359,6 +369,7 @@ describe('cli app map options', () => {
           screens: 2,
           variants: 2,
           edges: 2,
+          actions: 3,
           auth_required_variants: 1,
           updated_at: '2026-07-07T00:01:00.000Z'
         }

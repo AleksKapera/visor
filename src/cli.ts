@@ -501,6 +501,17 @@ function mapArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function mapActionCount(variants: unknown[]): number {
+  let total = 0;
+  for (const variant of variants) {
+    if (!isRecord(variant)) {
+      continue;
+    }
+    total += mapArray(variant.actions).length;
+  }
+  return total;
+}
+
 function appMapSummaryFromPath(mapPath: string): JsonRecord | undefined {
   try {
     const parsed = JSON.parse(fs.readFileSync(mapPath, 'utf8')) as unknown;
@@ -517,6 +528,7 @@ function appMapSummaryFromPath(mapPath: string): JsonRecord | undefined {
       screens: mapArray(parsed.screens).length,
       variants: variants.length,
       edges: mapArray(parsed.edges).length,
+      actions: mapActionCount(variants),
       auth_required_variants: variants.filter((variant) => isRecord(variant) && variant.auth_required === true).length,
       updated_at: optionalString(parsed.updated_at)
     };
