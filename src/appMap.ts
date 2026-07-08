@@ -58,6 +58,8 @@ interface AppMapVariant {
   fingerprint: string;
   normalized_fingerprint: string;
   elements: SourceElement[];
+  items?: AppMapItem[];
+  exit_recipes?: AppMapExitRecipe[];
   element_keys: string[];
   actions: AppMapAction[];
   auth_required: boolean;
@@ -69,6 +71,36 @@ interface AppMapVariant {
 interface AppMapActionScope {
   kind: 'content' | 'section' | 'screen';
   label?: string;
+}
+
+interface AppMapItem {
+  category: 'button' | 'text' | 'container' | 'input' | 'image' | 'scroll' | 'unknown';
+  label?: string;
+  targets: string[];
+  rect: {
+    x: number | null;
+    y: number | null;
+    width: number | null;
+    height: number | null;
+  };
+  enabled: boolean;
+  visible: boolean;
+  clickable: boolean;
+}
+
+interface AppMapExitRecipe {
+  command: 'tap';
+  intent: 'back' | 'close' | 'dismiss' | 'done';
+  label: string;
+  target: string;
+  args: Record<string, unknown>;
+  source: {
+    tag: string;
+    x: number | null;
+    y: number | null;
+    width: number | null;
+    height: number | null;
+  };
 }
 
 interface AppMapAction {
@@ -135,6 +167,8 @@ interface ResolvedMapOptions {
   crawlLimit: number;
   crawlSettleMs: number;
   crawlSettlePollMs: number;
+  crawlInclude: string[];
+  crawlAllowRisky: boolean;
 }
 
 interface AppMapContext {
@@ -240,6 +274,8 @@ interface TapCandidateOptions {
   preferContent?: boolean;
   excludeNavigation?: boolean;
   skipCurrentNavigation?: boolean;
+  include?: string[];
+  allowRisky?: boolean;
 }
 
 interface ObserveAfterActionOptions {
@@ -269,6 +305,11 @@ interface TargetDescriptor {
   confidence: number;
 }
 
+type AppMapExecutionOptions = MapExecutionOptions & {
+  crawlInclude?: string[];
+  crawlAllowRisky?: boolean;
+};
+
 const RISKY_WORDS = [
   'delete',
   'remove',
@@ -297,7 +338,7 @@ function envNoMap(): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(raw ?? '').trim().toLowerCase());
 }
 
-function resolveOptions(platform: Platform, options?: MapExecutionOptions): ResolvedMapOptions {
+function resolveOptions(platform: Platform, options?: AppMapExecutionOptions): ResolvedMapOptions {
   const enabled = options?.enabled !== false && !envNoMap();
   return {
     enabled,
@@ -310,7 +351,11 @@ function resolveOptions(platform: Platform, options?: MapExecutionOptions): Reso
     crawlDepth: options?.crawlDepth ?? 2,
     crawlLimit: options?.crawlLimit ?? 24,
     crawlSettleMs: nonNegativeNumber(options?.crawlSettleMs, DEFAULT_CRAWL_SETTLE_MS),
-    crawlSettlePollMs: positiveNumber(options?.crawlSettlePollMs, DEFAULT_CRAWL_SETTLE_POLL_MS)
+    crawlSettlePollMs: positiveNumber(options?.crawlSettlePollMs, DEFAULT_CRAWL_SETTLE_POLL_MS),
+    crawlInclude: Array.isArray(options?.crawlInclude)
+      ? unique(options.crawlInclude.map((value) => String(value).trim()).filter(Boolean))
+      : [],
+    crawlAllowRisky: options?.crawlAllowRisky === true
   };
 }
 
@@ -358,14 +403,27 @@ function readMap(filePath: string, platform: Platform, appId: string): LoadedApp
     }
     const originalEdgeCount = parsed.edges.length;
     let enrichedActions = false;
+    let enrichedItems = false;
+    let enrichedExitRecipes = false;
     for (const variant of parsed.variants) {
       if (!Array.isArray(variant.actions)) {
         variant.actions = actionAffordancesForElements(variant.elements);
         enrichedActions = true;
       }
+      if (!Array.isArray(variant.items)) {
+        variant.items = onScreenItemsForElements(variant.elements);
+        enrichedItems = true;
+      }
+      if (!Array.isArray(variant.exit_recipes)) {
+        variant.exit_recipes = exitRecipesForElements(variant.elements);
+        enrichedExitRecipes = true;
+      }
     }
     parsed.edges = parsed.edges.filter((edge) => !isValueBearingAction(edge.command, edge.args));
-    return { map: parsed, scrubbed: parsed.edges.length !== originalEdgeCount || enrichedActions };
+    return {
+      map: parsed,
+      scrubbed: parsed.edges.length !== originalEdgeCount || enrichedActions || enrichedItems || enrichedExitRecipes
+    };
   } catch {
     return { map: newMap(platform, appId), scrubbed: false };
   }
@@ -380,7 +438,7 @@ function writeMap(filePath: string, map: AppMapFile): void {
 
 export function createMapSummary(
   adapter: PlatformAdapter,
-  options?: MapExecutionOptions
+  options?: AppMapExecutionOptions
 ): MapExecutionSummary {
   const platform = adapter.capability().platform;
   const resolved = resolveOptions(platform, options);
@@ -399,7 +457,7 @@ export function createMapSummary(
 
 export function createAppMapContext(
   adapter: PlatformAdapter,
-  options?: MapExecutionOptions
+  options?: AppMapExecutionOptions
 ): AppMapContext | null {
   const platform = adapter.capability().platform;
   const resolved = resolveOptions(platform, options);
@@ -727,6 +785,8 @@ function newVariant(map: AppMapFile, observation: ScreenObservation): AppMapVari
     fingerprint: observation.fingerprint,
     normalized_fingerprint: observation.normalized_fingerprint,
     elements: observation.elements,
+    items: onScreenItemsForElements(observation.elements),
+    exit_recipes: exitRecipesForElements(observation.elements),
     element_keys: observation.element_keys,
     actions: actionAffordancesForElements(observation.elements),
     auth_required: observation.auth_required,
@@ -793,6 +853,8 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
   best.fingerprint = observation.fingerprint;
   best.normalized_fingerprint = observation.normalized_fingerprint;
   best.elements = observation.elements;
+  best.items = onScreenItemsForElements(observation.elements);
+  best.exit_recipes = exitRecipesForElements(observation.elements);
   best.element_keys = observation.element_keys;
   best.actions = actionAffordancesForElements(observation.elements);
   best.auth_required = observation.auth_required;
@@ -1577,6 +1639,33 @@ function assertObservedEffect(
   throw new Error(`Action '${command}' on '${target}' had no effect: screen source did not change after the command`);
 }
 
+function actionObservationPayload(before: ObservedVariant, after: ObservedVariant): Record<string, unknown> {
+  return {
+    before_fingerprint: before.observation.fingerprint,
+    after_fingerprint: after.observation.fingerprint,
+    screen_changed: before.observation.fingerprint !== after.observation.fingerprint,
+    previous: {
+      variant_id: before.variant.id,
+      screen_id: before.variant.screen_id
+    },
+    current: {
+      variant_id: after.variant.id,
+      screen_id: after.variant.screen_id
+    },
+    visible_text: visibleTextSummary(after.variant)
+  };
+}
+
+function visibleTextSummary(variant: AppMapVariant): string[] {
+  return unique(
+    variant.elements
+      .filter((element) => element.visible !== false)
+      .flatMap((element) => element.labels)
+      .flatMap((label) => label.split(/\n+/).map((line) => line.trim()).filter(Boolean))
+      .filter((label) => !isGlobalIdentityLabel(label))
+  ).slice(0, 12);
+}
+
 function variantSatisfiesContract(variant: AppMapVariant, contract: DestinationContract): boolean {
   if (variant.id === contract.variant_id) {
     return true;
@@ -1697,12 +1786,15 @@ function safeTapCandidates(variant: AppMapVariant, options: TapCandidateOptions 
   });
 
   for (const element of elements) {
-    if (!(element.safety === 'safe' && element.stable && isLikelyTapElement(element))) {
+    if (!tapCandidateSafetyAllowed(element, options) || !(element.stable && isLikelyTapElement(element))) {
       continue;
     }
 
     const target = plainTapTargets(element)[0] ?? element.selector;
     if (!target) {
+      continue;
+    }
+    if (!tapCandidateIncluded(element, target, options.include ?? [])) {
       continue;
     }
     const normalizedTarget = normalizeControlTarget(target);
@@ -1724,6 +1816,22 @@ function safeTapCandidates(variant: AppMapVariant, options: TapCandidateOptions 
   }
 
   return candidates;
+}
+
+function tapCandidateSafetyAllowed(element: SourceElement, options: TapCandidateOptions): boolean {
+  return element.safety === 'safe' || (options.allowRisky === true && element.safety === 'risky');
+}
+
+function tapCandidateIncluded(element: SourceElement, target: string, include: string[]): boolean {
+  if (include.length === 0) {
+    return true;
+  }
+
+  const haystack = unique([target, element.selector, ...element.labels, ...element.targets].map(normalizeControlTarget));
+  const needles = include.map(normalizeControlTarget).filter(Boolean);
+  return needles.some((needle) =>
+    haystack.some((candidate) => candidate === needle || candidate.includes(needle))
+  );
 }
 
 function tapElementPriority(element: SourceElement, variant: AppMapVariant, options: TapCandidateOptions = {}): number {
@@ -1828,6 +1936,104 @@ function actionAffordancesForElements(elements: SourceElement[]): AppMapAction[]
   }
 
   return actions;
+}
+
+function onScreenItemsForElements(elements: SourceElement[]): AppMapItem[] {
+  return elements.map((element) => ({
+    category: itemCategory(element),
+    ...(itemLabel(element) ? { label: itemLabel(element) } : {}),
+    targets: element.targets,
+    rect: {
+      x: element.x,
+      y: element.y,
+      width: element.width,
+      height: element.height
+    },
+    enabled: element.enabled,
+    visible: element.visible,
+    clickable: element.clickable
+  }));
+}
+
+function exitRecipesForElements(elements: SourceElement[]): AppMapExitRecipe[] {
+  return elements
+    .filter((element) => element.enabled !== false && element.visible !== false)
+    .map((element) => ({ element, intent: exitIntent(element), args: coordinateArgsForElement(element) }))
+    .filter((candidate): candidate is { element: SourceElement; intent: AppMapExitRecipe['intent']; args: Record<string, unknown> } =>
+      candidate.intent !== null && candidate.args !== null
+    )
+    .map(({ element, intent, args }) => ({
+      command: 'tap',
+      intent,
+      label: exitRecipeLabel(element, intent),
+      target: coordinateTarget(args),
+      args,
+      source: {
+        tag: element.tag,
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height
+      }
+    }));
+}
+
+function exitIntent(element: SourceElement): AppMapExitRecipe['intent'] | null {
+  if (!isLikelyTapElement(element)) {
+    return null;
+  }
+
+  for (const label of element.labels) {
+    for (const line of label.split(/\n+/)) {
+      const normalized = normalizeControlTarget(line);
+      if (normalized === 'back') {
+        return 'back';
+      }
+      if (normalized === 'close') {
+        return 'close';
+      }
+      if (normalized === 'dismiss') {
+        return 'dismiss';
+      }
+      if (normalized === 'done') {
+        return 'done';
+      }
+    }
+  }
+
+  return null;
+}
+
+function exitRecipeLabel(element: SourceElement, intent: AppMapExitRecipe['intent']): string {
+  return itemLabel(element) || intent;
+}
+
+function itemCategory(element: SourceElement): AppMapItem['category'] {
+  const tag = element.tag.toLowerCase();
+  if (tag.includes('textfield') || tag.includes('edittext') || tag.includes('input')) {
+    return 'input';
+  }
+  if (tag.includes('button') || element.clickable) {
+    return 'button';
+  }
+  if (isScrollableTag(tag)) {
+    return 'scroll';
+  }
+  if (tag.includes('statictext') || tag.includes('textview') || tag === 'text') {
+    return 'text';
+  }
+  if (tag.includes('image')) {
+    return 'image';
+  }
+  if (tag.includes('other') || tag.includes('view') || tag.includes('container')) {
+    return 'container';
+  }
+  return 'unknown';
+}
+
+function itemLabel(element: SourceElement): string {
+  const label = element.labels[0] ?? plainTapTargets(element)[0] ?? element.selector;
+  return label.split(/\n+/).map((line) => line.trim()).filter(Boolean)[0] ?? label.trim();
 }
 
 function actionLabel(element: SourceElement): string {
@@ -1935,13 +2141,15 @@ function sectionNavigationHint(value: string, map: AppMapFile): string | null {
   return null;
 }
 
-function crawlCandidateOptions(variant: AppMapVariant): TapCandidateOptions {
+function crawlCandidateOptions(context: AppMapContext, variant: AppMapVariant): TapCandidateOptions {
   const preferredTarget = preferredNavigationTarget(variant);
   const preferContent = preferredTarget !== null && !isPrimaryNavigationTarget(variant, preferredTarget);
   return {
     preferContent,
     excludeNavigation: preferContent,
-    skipCurrentNavigation: true
+    skipCurrentNavigation: true,
+    include: context.options.crawlInclude,
+    allowRisky: context.options.crawlAllowRisky
   };
 }
 
@@ -2610,7 +2818,7 @@ export async function runMappedCommand(
     const after = await observeCurrentScreen(context);
     assertObservedEffect(command, args, before, after, descriptor);
     recordEdgeSuccess(context, before.variant, after.variant, command, args, false);
-    return { ...details, map: metadata };
+    return { ...details, map: metadata, observation: actionObservationPayload(before, after) };
   }
 
   let liveTargetVisible = await liveContainsTarget(context, descriptor);
@@ -2703,7 +2911,7 @@ export async function runMappedCommand(
   const after = await observeCurrentScreen(context);
   assertObservedEffect(command, executableArgs, before, after, descriptor);
   recordEdgeSuccess(context, before.variant, after.variant, command, executableArgs, false);
-  return { ...details, map: metadata };
+  return { ...details, map: metadata, observation: actionObservationPayload(before, after) };
 }
 
 function restoreAttemptDiagnostic(
@@ -2822,6 +3030,15 @@ function targetRestoreCandidates(current: ObservedVariant, target: ObservedVaria
     const descriptor = targetDescriptor('tap', { target: candidate.target });
     return descriptor.kind !== 'unknown' && variantContainsTarget(target.variant, descriptor);
   });
+}
+
+function exitRecipeCandidates(variant: AppMapVariant): TapCandidate[] {
+  const recipes = Array.isArray(variant.exit_recipes) ? variant.exit_recipes : exitRecipesForElements(variant.elements);
+  return recipes.map((recipe) => ({
+    target: recipe.target,
+    args: structuredClone(recipe.args),
+    key: recipe.target
+  }));
 }
 
 function reverseScrollRestoreCandidates(current: ObservedVariant, target: ObservedVariant): TapCandidate[] {
@@ -2967,6 +3184,23 @@ async function restoreToVariant(
     return { current: target, restored: true, acceptedBy: initialMatch.acceptedBy, diagnostic };
   }
 
+  for (const restoreCandidate of exitRecipeCandidates(current.variant)) {
+    const restored = await tryTapRestoreCandidate(
+      context,
+      current,
+      target,
+      restoreCandidate,
+      'exit-recipe',
+      diagnostic
+    );
+    current = restored.current;
+    if (restored.match) {
+      diagnostic.result = 'restored';
+      diagnostic.accepted_by = restored.match.acceptedBy;
+      return { current: target, restored: true, acceptedBy: restored.match.acceptedBy, diagnostic };
+    }
+  }
+
   const restoreTargets = safeTapCandidates(current.variant).filter((candidate) =>
     /^(back|close|dismiss|done)$/i.test(candidate.target)
   );
@@ -3085,7 +3319,7 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
     visited.add(origin.variant.id);
     const attemptsForVariant = attemptedTargets.get(origin.variant.id) ?? new Set<string>();
     attemptedTargets.set(origin.variant.id, attemptsForVariant);
-    const candidates = safeTapCandidates(origin.variant, crawlCandidateOptions(origin.variant))
+    const candidates = safeTapCandidates(origin.variant, crawlCandidateOptions(context, origin.variant))
       .filter((candidate) => !attemptsForVariant.has(candidate.key));
     let current = origin;
 
@@ -3267,7 +3501,7 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
 
 export async function discoverAppMap(
   adapter: PlatformAdapter,
-  options?: MapExecutionOptions
+  options?: AppMapExecutionOptions
 ): Promise<Record<string, unknown>> {
   const context = createAppMapContext(adapter, options);
   if (!context) {

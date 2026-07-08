@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { discoverAppMap } from '../src/appMap.js';
+import { createAppMapContext, discoverAppMap, runMappedCommand } from '../src/appMap.js';
 import { runScenario } from '../src/runner.js';
 import { writeReports } from '../src/report.js';
 import type { AdapterCapability, PlatformAdapter, Scenario } from '../src/types.js';
@@ -1165,6 +1165,26 @@ const crawlCandidateFilterGraph = {
   }
 };
 
+const riskyIncludedCrawlGraph = {
+  home: {
+    source:
+      '<App><Button name="Help" label="Help" x="20" y="140" width="150" height="44" />' +
+      '<Button name="Delete" label="Delete" x="20" y="200" width="150" height="44" /></App>',
+    taps: { Help: 'help', Delete: 'deleted' },
+    coordinateTaps: { '95,162': 'help', '95,222': 'deleted' }
+  },
+  help: {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /></App>',
+    taps: { Back: 'home' },
+    coordinateTaps: { '40,90': 'home' }
+  },
+  deleted: {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /></App>',
+    taps: { Back: 'home' },
+    coordinateTaps: { '40,90': 'home' }
+  }
+};
+
 describe('app map execution', () => {
   it('crawls safe controls during discovery so later runs can route through them', async () => {
     const mapRoot = appMapDir();
@@ -1236,6 +1256,144 @@ describe('app map execution', () => {
       'tap:40,90',
       'source:home'
     ]);
+  });
+
+  it('honors app-map crawl include and risky opt-in options through public APIs', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.risky-included-crawl',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 4,
+      crawlSettleMs: 0,
+      crawlInclude: ['Delete'],
+      crawlAllowRisky: true
+    };
+
+    const context = createAppMapContext(new ScreenGraphAdapter(riskyIncludedCrawlGraph), mapOptions);
+    expect(context?.options).toMatchObject({
+      crawlInclude: ['Delete'],
+      crawlAllowRisky: true
+    });
+
+    const adapter = new ScreenGraphAdapter(riskyIncludedCrawlGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+
+    expect(discovery).toMatchObject({
+      crawl: {
+        actions: 1
+      }
+    });
+    expect(adapter.actions).toEqual([
+      'source:home',
+      'tap:95,222',
+      'source:deleted',
+      'tap:40,90',
+      'source:home'
+    ]);
+  });
+
+  it('persists and uses coordinate exit recipes for Flutter-style back controls', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.exit-recipes',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 1,
+      crawlSettleMs: 0
+    };
+
+    const adapter = new ScreenGraphAdapter(crawlCandidateFilterGraph);
+    const discovery = await discoverAppMap(adapter, mapOptions);
+    const crawl = discovery.crawl as {
+      restore_diagnostics?: Array<{
+        attempts: Array<{ strategy: string; target?: string; command?: string }>;
+      }>;
+    };
+
+    expect(crawl.restore_diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          attempts: expect.arrayContaining([
+            expect.objectContaining({
+              strategy: 'exit-recipe',
+              command: 'tap',
+              target: 'x=40,y=90'
+            })
+          ])
+        })
+      ])
+    );
+
+    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
+    const persisted = JSON.parse(fs.readFileSync(path.join(mapRoot, mapFile), 'utf8')) as {
+      variants: Array<{
+        exit_recipes?: Array<{ command: string; target?: string; args: Record<string, unknown> }>;
+      }>;
+    };
+    const exitRecipes = persisted.variants.flatMap((variant) => variant.exit_recipes ?? []);
+
+    expect(exitRecipes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: 'tap',
+          target: 'x=40,y=90',
+          args: { x: 40, y: 90 }
+        })
+      ])
+    );
+    expect(adapter.actions).not.toContain('act:back');
+  });
+
+  it('returns observation metadata for mapped direct and scenario actions', async () => {
+    const directContext = createAppMapContext(
+      new ScreenGraphAdapter(graph),
+      {
+        enabled: true,
+        rootDir: appMapDir(),
+        appId: 'com.example.direct-observation'
+      }
+    );
+    const directDetails = await runMappedCommand(directContext!, 'tap', { target: 'Settings' });
+
+    expect(directDetails.observation).toMatchObject({
+      screen_changed: true,
+      current: {
+        variant_id: 'variant_2',
+        screen_id: 'screen_2'
+      },
+      visible_text: ['Advanced']
+    });
+    expect((directDetails.observation as { before_fingerprint?: unknown }).before_fingerprint).toEqual(expect.any(String));
+    expect((directDetails.observation as { after_fingerprint?: unknown }).after_fingerprint).toEqual(expect.any(String));
+
+    const scenarioRun = await runScenario(
+      scenarioWithTap('Settings'),
+      new ScreenGraphAdapter(graph),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      {
+        enabled: true,
+        rootDir: appMapDir(),
+        appId: 'com.example.scenario-observation'
+      }
+    );
+
+    expect(scenarioRun.status).toBe('ok');
+    expect(scenarioRun.steps[0]?.details.observation).toMatchObject({
+      screen_changed: true,
+      current: {
+        variant_id: 'variant_2',
+        screen_id: 'screen_2'
+      },
+      visible_text: ['Advanced']
+    });
   });
 
   it('prioritizes bottom navigation during crawl and restores through target tabs', async () => {
@@ -1662,6 +1820,61 @@ describe('app map execution', () => {
           intent: 'share',
           label: 'Share activity',
           scope: expect.objectContaining({ kind: 'content' })
+        })
+      ])
+    );
+  });
+
+  it('persists categorized on-screen items for replay and review tooling', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.persisted-items'
+    };
+
+    await discoverAppMap(new ScreenGraphAdapter(activityActionAffordanceGraph, 'activity'), mapOptions);
+
+    const [mapFile] = fs.readdirSync(mapRoot).filter((file) => file.endsWith('.json'));
+    const persisted = JSON.parse(fs.readFileSync(path.join(mapRoot, mapFile), 'utf8')) as {
+      variants: Array<{
+        items?: Array<{
+          category: string;
+          label?: string;
+          targets: string[];
+          rect?: { x: number | null; y: number | null; width: number | null; height: number | null };
+          enabled: boolean;
+          visible: boolean;
+          clickable: boolean;
+        }>;
+      }>;
+    };
+    const items = persisted.variants.flatMap((variant) => variant.items ?? []);
+
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'text',
+          label: 'Activity',
+          targets: expect.arrayContaining(['Activity', 'text=Activity']),
+          visible: true
+        }),
+        expect.objectContaining({
+          category: 'container',
+          label: expect.stringContaining('Feed Post'),
+          rect: {
+            x: 20,
+            y: 190,
+            width: 350,
+            height: 180
+          }
+        }),
+        expect.objectContaining({
+          category: 'button',
+          label: 'Like activity',
+          targets: expect.arrayContaining(['Like activity']),
+          enabled: true,
+          clickable: false
         })
       ])
     );

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 
 import { DEFAULT_SERVER_URL } from './adapters.js';
 import {
@@ -73,6 +74,22 @@ interface VersionData {
 
 type JsonRecord = Record<string, unknown>;
 
+interface RecordedFlowStep {
+  id: string;
+  command: CommandName;
+  args: Record<string, unknown>;
+  result?: Record<string, unknown>;
+}
+
+interface RecordedFlow {
+  schema_version: 1;
+  name: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  steps: RecordedFlowStep[];
+}
+
 function packageVersion(): string {
   try {
     const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -82,6 +99,167 @@ function packageVersion(): string {
   } catch {
     return 'unknown';
   }
+}
+
+function flowDir(): string {
+  return path.join(process.cwd(), '.visor', 'flows');
+}
+
+function assertFlowName(name: string): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    throw new Error('Flow name may contain only letters, numbers, dots, dashes, and underscores');
+  }
+}
+
+function flowPath(name: string): string {
+  assertFlowName(name);
+  return path.join(flowDir(), `${name}.json`);
+}
+
+function flowResponse(flow: RecordedFlow, action = 'record'): JsonRecord {
+  return {
+    action,
+    name: flow.name,
+    active: flow.active,
+    steps: flow.steps.length,
+    path: flowPath(flow.name)
+  };
+}
+
+function readFlow(name: string): RecordedFlow | null {
+  const targetPath = flowPath(name);
+  if (!fs.existsSync(targetPath)) {
+    return null;
+  }
+
+  return JSON.parse(fs.readFileSync(targetPath, 'utf8')) as RecordedFlow;
+}
+
+function writeFlow(flow: RecordedFlow): void {
+  fs.mkdirSync(flowDir(), { recursive: true });
+  fs.writeFileSync(flowPath(flow.name), `${JSON.stringify(flow, null, 2)}\n`, 'utf8');
+}
+
+function activeFlows(): RecordedFlow[] {
+  const dir = flowDir();
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+
+  return fs.readdirSync(dir)
+    .filter((file) => file.endsWith('.json'))
+    .flatMap((file) => {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')) as RecordedFlow;
+        return parsed.active ? [parsed] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
+function recordableResult(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  const result: Record<string, unknown> = {};
+  for (const key of ['map', 'observation', 'screen']) {
+    if (payload[key] !== undefined) {
+      result[key] = payload[key];
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function replayableRecordedArgs(
+  command: CommandName,
+  fallbackArgs: Record<string, unknown>,
+  payloadArgs: Record<string, unknown> | null
+): Record<string, unknown> {
+  const candidate = payloadArgs ?? fallbackArgs;
+  if (command === 'tap' && typeof candidate.x === 'number' && typeof candidate.y === 'number') {
+    return {
+      x: candidate.x,
+      y: candidate.y,
+      ...(candidate.normalized === true ? { normalized: true } : {})
+    };
+  }
+
+  const cloned = structuredClone(candidate);
+  delete cloned.tap_method;
+  return cloned;
+}
+
+function appendActiveRecordings(command: CommandName, args: Record<string, unknown>, payload: Record<string, unknown>): JsonRecord[] {
+  const flows = activeFlows();
+  const recorded: JsonRecord[] = [];
+  for (const flow of flows) {
+    const stepNumber = flow.steps.length + 1;
+    const payloadArgs = payload.args;
+    const recordedArgs =
+      payloadArgs && typeof payloadArgs === 'object' && !Array.isArray(payloadArgs)
+        ? replayableRecordedArgs(command, args, payloadArgs as Record<string, unknown>)
+        : replayableRecordedArgs(command, args, null);
+    flow.steps.push({
+      id: `${String(stepNumber).padStart(3, '0')}-${command}`,
+      command,
+      args: recordedArgs,
+      ...(recordableResult(payload) ? { result: recordableResult(payload) } : {})
+    });
+    flow.updated_at = utcNowIso();
+    writeFlow(flow);
+    recorded.push({
+      name: flow.name,
+      path: flowPath(flow.name),
+      steps: flow.steps.length
+    });
+  }
+  return recorded;
+}
+
+function parseReplayParams(options: ParsedOptions): Record<string, string> {
+  const params: Record<string, string> = {};
+  const raw = options.param;
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return params;
+  }
+
+  const separator = raw.indexOf('=');
+  if (separator <= 0) {
+    throw new Error("--param must use the form key=value");
+  }
+  params[raw.slice(0, separator)] = raw.slice(separator + 1);
+  return params;
+}
+
+function substituteParams(value: unknown, params: Record<string, string>): unknown {
+  if (typeof value === 'string') {
+    return value.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (match, key: string) => params[key] ?? match);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => substituteParams(item, params));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, substituteParams(item, params)])
+    );
+  }
+  return value;
+}
+
+function scenarioFromFlow(flow: RecordedFlow, params: Record<string, string>): Scenario {
+  return {
+    meta: {
+      name: `replay:${flow.name}`,
+      version: '1',
+      tags: ['replay']
+    },
+    config: {},
+    steps: flow.steps.map((step) => ({
+      id: step.id,
+      command: step.command,
+      args: substituteParams(step.args, params) as Record<string, unknown>
+    })),
+    assertions: [],
+    output: {}
+  };
 }
 
 const ACTION_COMMANDS = new Set<CommandName>([
@@ -100,6 +278,8 @@ const ALL_COMMANDS = new Set<string>([
   'discover',
   'benchmark',
   'report',
+  'record',
+  'replay',
   'start',
   'status',
   'stop'
@@ -137,7 +317,13 @@ const ACTION_SPEC: Record<string, OptionType> = {
   'start-value': 'number',
   label: 'string',
   ms: 'number',
-  path: 'string'
+  path: 'string',
+  for: 'string',
+  'wait-for': 'string',
+  'poll-ms': 'number',
+  stable: 'boolean',
+  settle: 'boolean',
+  'settle-ms': 'number'
 };
 
 const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
@@ -155,7 +341,9 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     repair: 'boolean',
     crawl: 'boolean',
     'crawl-depth': 'number',
-    'crawl-limit': 'number'
+    'crawl-limit': 'number',
+    'crawl-include': 'string',
+    'crawl-allow-risky': 'boolean'
   },
   discover: {
     device: 'string',
@@ -168,7 +356,9 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     repair: 'boolean',
     crawl: 'boolean',
     'crawl-depth': 'number',
-    'crawl-limit': 'number'
+    'crawl-limit': 'number',
+    'crawl-include': 'string',
+    'crawl-allow-risky': 'boolean'
   },
   benchmark: {
     runs: 'number',
@@ -185,6 +375,22 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     'compare-map': 'boolean'
   },
   report: { format: 'string' },
+  record: {
+    format: 'string',
+    stop: 'boolean'
+  },
+  replay: {
+    device: 'string',
+    timeout: 'number',
+    output: 'string',
+    format: 'string',
+    'server-url': 'string',
+    'app-id': 'string',
+    attach: 'boolean',
+    'no-map': 'boolean',
+    repair: 'boolean',
+    param: 'string'
+  },
   start: {
     'server-url': 'string',
     'appium-cmd': 'string',
@@ -213,7 +419,9 @@ const ACTION_ARG_OPTION_NAMES: Record<string, string> = {
   'start-y': 'startY',
   'end-x': 'endX',
   'end-y': 'endY',
-  'start-value': 'startValue'
+  'start-value': 'startValue',
+  'poll-ms': 'pollMs',
+  'settle-ms': 'settleMs'
 };
 
 function helpText(): string {
@@ -231,6 +439,8 @@ function helpText(): string {
     '  benchmark <scenario> [--runs <n>] [--threshold <percent>]',
     '  discover [--app-id <id>]',
     '  report [path]',
+    '  record <name> [--stop]',
+    '  replay <name> [--param key=value]',
     '  start [--server-url <url>] [--appium-cmd <cmd>]',
     '  status [--server-url <url>]',
     '  stop [--server-url <url>] [--force]',
@@ -243,6 +453,8 @@ function helpText(): string {
     '  visor run scenarios/checkout-smoke.json --output artifacts-test',
     '  visor run scenarios/checkout-smoke.json --no-map',
     '  visor discover --app-id com.example.app',
+    '  visor record deposit',
+    '  visor replay deposit --param amount=100',
     '  visor scroll --device emulator-5554 --direction down',
     '  visor status'
   ].join('\n');
@@ -271,6 +483,8 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --x <points>              X coordinate in screen points, or fraction with --normalized',
         '  --y <points>              Y coordinate in screen points, or fraction with --normalized',
         '  --normalized              Treat x/y as fractions of current screen size',
+        '  --wait-for <selector>     Wait for a selector after the tap',
+        '  --timeout <ms>            Timeout for runtime action or --wait-for',
         '  --no-map                  Disable app-map reads and writes',
         '  --repair                  Allow opt-in exploratory app-map repair'
       ].join('\n'),
@@ -294,6 +508,8 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --crawl                   Explore safe controls and record app-map edges',
         '  --crawl-depth <n>         Maximum crawl depth, default 2',
         '  --crawl-limit <n>         Maximum crawl actions, default 24',
+        '  --crawl-include <text>    Only crawl controls matching this text',
+        '  --crawl-allow-risky       Include risky controls when crawling sandbox/dev builds',
         '  --no-map                  Disable app-map reads and writes'
       ].join('\n'),
       examples
@@ -316,7 +532,7 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '',
         'Options:',
         '  --name <operation>        Helper action name',
-        '  --target <selector>      Target selector for type or slider',
+        '  --target <selector>      Target selector for type or slider; optional for focused type',
         '  --value <value>          Text value for type, or 0..1 slider value',
         '  --start-x <points>       Drag start x coordinate',
         '  --start-y <points>       Drag start y coordinate',
@@ -324,6 +540,32 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --end-y <points>         Drag end y coordinate',
         '  --start-value <0..1>     Slider starting value, default 0.5',
         '  --normalized             Treat drag coordinates as viewport fractions'
+      ].join('\n'),
+      examples
+    };
+  }
+
+  if (command === 'wait') {
+    const examples = [
+      'visor wait --ms 500',
+      'visor wait --for "text=Slide to Confirm" --timeout 8000',
+      'visor wait --stable --timeout 2000'
+    ];
+    return {
+      usageText: [
+        'Visor wait',
+        '',
+        'Usage:',
+        '  visor wait --ms <milliseconds>',
+        '  visor wait --for <selector> [--timeout <ms>] [--poll-ms <ms>]',
+        '  visor wait --stable [--timeout <ms>] [--poll-ms <ms>]',
+        '',
+        'Options:',
+        '  --ms <milliseconds>      Sleep duration',
+        '  --for <selector>         Poll until selector exists',
+        '  --stable                 Poll until UI source stops changing',
+        '  --timeout <ms>           Wait timeout',
+        '  --poll-ms <ms>           Poll interval'
       ].join('\n'),
       examples
     };
@@ -345,6 +587,49 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --runs <n>               Number of runs, default 20',
         '  --threshold <percent>    Required determinism score, default 95',
         '  --compare-map            Run no-map and app-map variants for A/B comparison'
+      ].join('\n'),
+      examples
+    };
+  }
+
+  if (command === 'record') {
+    const examples = [
+      'visor record deposit',
+      'visor tap --target Deposit',
+      'visor record deposit --stop'
+    ];
+    return {
+      usageText: [
+        'Visor record',
+        '',
+        'Usage:',
+        '  visor record <name>',
+        '  visor record <name> --stop',
+        '',
+        'Options:',
+        '  --stop                    Stop recording and keep the replay file'
+      ].join('\n'),
+      examples
+    };
+  }
+
+  if (command === 'replay') {
+    const examples = [
+      'visor replay deposit',
+      'visor replay deposit --param amount=100'
+    ];
+    return {
+      usageText: [
+        'Visor replay',
+        '',
+        'Usage:',
+        '  visor replay <name> [--param key=value] [runtime options]',
+        '',
+        'Options:',
+        '  --param <key=value>       Substitute {{key}} placeholders in recorded args',
+        '  --output <dir>            Base output directory for replay artifacts',
+        '  --no-map                  Disable app-map reads and writes',
+        '  --repair                  Allow opt-in exploratory app-map repair'
       ].join('\n'),
       examples
     };
@@ -460,10 +745,21 @@ function warningIssues(issues: ValidationIssue[]): ValidationIssue[] {
   return issues.filter((issue) => issue.severity === 'warning');
 }
 
+function crawlIncludeValues(value: unknown): string[] {
+  if (typeof value !== 'string') {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 async function resolvedRuntime(options: ParsedOptions): Promise<RuntimeOptions> {
   const selectedDevice = await resolveRunningDevice(
     typeof options.device === 'string' ? options.device : undefined
   );
+  const crawlInclude = crawlIncludeValues(options['crawl-include']);
 
   return {
     platform: selectedDevice.platform,
@@ -481,7 +777,9 @@ async function resolvedRuntime(options: ParsedOptions): Promise<RuntimeOptions> 
       ...(options.repair === true ? { repair: true } : {}),
       ...(options.crawl === true ? { crawl: true } : {}),
       ...(typeof options['crawl-depth'] === 'number' ? { crawlDepth: options['crawl-depth'] } : {}),
-      ...(typeof options['crawl-limit'] === 'number' ? { crawlLimit: options['crawl-limit'] } : {})
+      ...(typeof options['crawl-limit'] === 'number' ? { crawlLimit: options['crawl-limit'] } : {}),
+      ...(crawlInclude.length > 0 ? { crawlInclude } : {}),
+      ...(options['crawl-allow-risky'] === true ? { crawlAllowRisky: true } : {})
     }
   };
 }
@@ -502,6 +800,9 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
     'repair'
   ]);
   const args = Object.entries(options).reduce<Record<string, unknown>>((acc, [key, value]) => {
+    if (command !== 'wait' && ['for', 'wait-for', 'poll-ms'].includes(key)) {
+      return acc;
+    }
     if (!commonIgnored.has(key) && value !== undefined) {
       acc[ACTION_ARG_OPTION_NAMES[key] ?? key] = value;
     }
@@ -511,8 +812,31 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
   if (command === 'source' && args.label === undefined) {
     args.label = 'source';
   }
+  if (command === 'wait' && typeof options.timeout === 'number') {
+    args.timeout = options.timeout;
+  }
+  if ((command === 'screenshot' || command === 'source') && typeof options.output === 'string' && args.path === undefined) {
+    const label = String(args.label ?? (command === 'source' ? 'source' : 'capture'));
+    const extension = command === 'source' ? 'xml' : 'png';
+    args.path = path.join(options.output, `${label}.${extension}`);
+  }
 
   return args;
+}
+
+function postActionWaitArgs(command: CommandName, options: ParsedOptions): Record<string, unknown> | null {
+  if (!['tap', 'act', 'scroll'].includes(command)) {
+    return null;
+  }
+  if (typeof options['wait-for'] !== 'string' || options['wait-for'].trim() === '') {
+    return null;
+  }
+
+  return {
+    for: options['wait-for'],
+    ...(typeof options.timeout === 'number' ? { timeout: options.timeout } : {}),
+    ...(typeof options['poll-ms'] === 'number' ? { pollMs: options['poll-ms'] } : {})
+  };
 }
 
 function unsupportedRuntimeResult(commandId: string, startedAt: string, runtime: unknown): CommandResult {
@@ -1129,6 +1453,160 @@ export async function cmdReport(parsed: ParsedCommand): Promise<CommandResult> {
   return { code: 0, response };
 }
 
+export async function cmdRecord(parsed: ParsedCommand): Promise<CommandResult> {
+  const commandId = makeId('cmd');
+  const startedAt = utcNowIso();
+  const name = parsed.positionals[0];
+
+  try {
+    if (!name) {
+      throw new Error('record requires a flow name');
+    }
+
+    if (parsed.options.stop === true) {
+      const existing = readFlow(name);
+      if (!existing) {
+        throw new Error(`No recorded flow named '${name}'`);
+      }
+      existing.active = false;
+      existing.updated_at = utcNowIso();
+      writeFlow(existing);
+      const response = envelopeOk(commandId, startedAt, [], 'replay');
+      response.data = flowResponse(existing);
+      return { code: 0, response };
+    }
+
+    const now = utcNowIso();
+    const flow: RecordedFlow = {
+      schema_version: 1,
+      name,
+      active: true,
+      created_at: now,
+      updated_at: now,
+      steps: []
+    };
+    writeFlow(flow);
+    const response = envelopeOk(commandId, startedAt, [], 'tap');
+    response.data = flowResponse(flow);
+    return { code: 0, response };
+  } catch (error) {
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'INPUT_ERROR',
+      'Record failed',
+      errorMessage(error),
+      'Use `visor record <name>` to start or `visor record <name> --stop` to finish'
+    );
+    return { code: 1, response };
+  }
+}
+
+export async function cmdReplay(parsed: ParsedCommand): Promise<CommandResult> {
+  const commandId = makeId('cmd');
+  const startedAt = utcNowIso();
+  const name = parsed.positionals[0];
+
+  try {
+    if (!name) {
+      throw new Error('replay requires a flow name');
+    }
+    const flow = readFlow(name);
+    if (!flow) {
+      throw new Error(`No recorded flow named '${name}'`);
+    }
+    if (flow.active) {
+      throw new Error(`Flow '${name}' is still recording; stop it before replay`);
+    }
+
+    const runtime = await resolvedRuntime(parsed.options);
+    const params = parseReplayParams(parsed.options);
+    const scenario = scenarioFromFlow(flow, params);
+    const result = await runDaemonScenario(
+      {
+        platform: runtime.platform,
+        server_url: runtime.server_url,
+        device: runtime.device,
+        app_id: runtime.app_id,
+        attach_to_running: runtime.attach_to_running
+      },
+      scenario,
+      runtime.device,
+      runtime.timeout,
+      runtime.output_dir,
+      {
+        ...runtime.map,
+        appId: runtime.app_id
+      }
+    );
+    const outputs = writeReports(result, runtime.output_dir);
+    const response = result.status === 'ok'
+      ? envelopeOk(commandId, startedAt, Object.values(outputs), 'report')
+      : envelopeFail(
+          commandId,
+          startedAt,
+          result.error?.code ?? 'ACTION_ERROR',
+          result.error?.message ?? 'Replay failed',
+          result.error?.likely_cause ?? `Recorded flow '${name}' did not complete`,
+          result.error?.next_step ?? 'Inspect replay artifacts and retry'
+        );
+    response.artifacts = Object.values(outputs);
+    response.data = {
+      action: 'replay',
+      name,
+      steps: flow.steps.length,
+      run: result,
+      params
+    };
+    return { code: result.status === 'ok' ? 0 : 2, response };
+  } catch (error) {
+    if (error instanceof DeviceSelectionError) {
+      const response = envelopeFail(
+        commandId,
+        startedAt,
+        'TARGET_ERROR',
+        'Device selection failed',
+        error.message,
+        'Start one target device or rerun with --device <device-id>'
+      );
+      response.data = { devices: error.devices };
+      return { code: 1, response };
+    }
+    if (error instanceof DaemonUnavailableError) {
+      const response = envelopeFail(
+        commandId,
+        startedAt,
+        'TARGET_ERROR',
+        'Replay requires visor start',
+        errorMessage(error),
+        'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
+      );
+      return { code: 1, response };
+    }
+    if (error instanceof DaemonRequestTimeoutError) {
+      const response = envelopeFail(
+        commandId,
+        startedAt,
+        'TARGET_ERROR',
+        'Timed out waiting for Visor daemon',
+        errorMessage(error),
+        'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
+      );
+      return { code: 1, response };
+    }
+
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'INPUT_ERROR',
+      'Replay failed',
+      errorMessage(error),
+      'Use `visor record <name>` to create a flow, then retry replay'
+    );
+    return { code: 1, response };
+  }
+}
+
 export async function cmdAction(command: CommandName, parsed: ParsedCommand): Promise<CommandResult> {
   const commandId = makeId('cmd');
   const startedAt = utcNowIso();
@@ -1154,23 +1632,30 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
   let payload: Record<string, unknown> = {};
   let artifacts: string[] = [];
   let actionError: unknown;
+  const runtimeInput = {
+    platform: options.platform,
+    server_url: options.server_url,
+    device: options.device,
+    app_id: options.app_id,
+    attach_to_running: options.attach_to_running
+  };
+  const mapOptions = {
+    ...options.map,
+    appId: options.app_id
+  };
+  const primaryArgs = actionArgs(command, parsed.options);
 
   try {
     payload = await runDaemonAction(
-      {
-        platform: options.platform,
-        server_url: options.server_url,
-        device: options.device,
-        app_id: options.app_id,
-        attach_to_running: options.attach_to_running
-      },
+      runtimeInput,
       command,
-      actionArgs(command, parsed.options),
-      {
-        ...options.map,
-        appId: options.app_id
-      }
+      primaryArgs,
+      mapOptions
     );
+    const waitArgs = postActionWaitArgs(command, parsed.options);
+    if (waitArgs) {
+      payload.wait = await runDaemonAction(runtimeInput, 'wait', waitArgs, mapOptions);
+    }
     const actionPayload = payload.args;
     if (actionPayload && typeof actionPayload === 'object' && !Array.isArray(actionPayload)) {
       const maybePath = (actionPayload as Record<string, unknown>).path;
@@ -1214,6 +1699,15 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
   }
 
   const response = envelopeOk(commandId, startedAt, artifacts, 'run');
+  const recorded = appendActiveRecordings(command, primaryArgs, payload);
+  const waitPayload = payload.wait;
+  if (waitPayload && typeof waitPayload === 'object' && !Array.isArray(waitPayload)) {
+    const waitRecorded = appendActiveRecordings('wait', postActionWaitArgs(command, parsed.options) ?? {}, waitPayload as Record<string, unknown>);
+    recorded.push(...waitRecorded);
+  }
+  if (recorded.length > 0) {
+    payload.recording = recorded;
+  }
   response.data = payload;
   return { code: 0, response };
 }
@@ -1316,6 +1810,12 @@ export async function executeCommand(argv: string[]): Promise<CommandResult> {
   }
   if (parsed.command === 'report') {
     return cmdReport(parsed);
+  }
+  if (parsed.command === 'record') {
+    return cmdRecord(parsed);
+  }
+  if (parsed.command === 'replay') {
+    return cmdReplay(parsed);
   }
   if (parsed.command === 'start') {
     return cmdStart(parsed);

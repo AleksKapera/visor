@@ -38,7 +38,7 @@ Use `--no-map` or `VISOR_NO_MAP=true` when you need raw Appium behavior. No-map 
 
 Exploratory repair is off by default. Use `--repair` when you want Visor to try safe controls after a missing or stale route instead of failing fast.
 
-Every mapped direct action returns `data.map`. Scenario runs return `data.run.map` and per-step map details under `data.run.steps[].details.map` when a step used routing, repair, or map observation.
+Every mapped direct action returns `data.map`. Mapped target, coordinate, and scroll actions also return `data.observation` with before/after fingerprints, `screen_changed`, previous/current screen ids, and visible text. Scenario runs return `data.run.map` and per-step map details under `data.run.steps[].details.map` when a step used routing, repair, or map observation.
 
 ## Direct action commands
 
@@ -51,6 +51,7 @@ Inputs:
 - target mode: `target`
 - coordinate mode: `x`, `y`
 - optional: `normalized`
+- optional: `wait-for`, `timeout`, and `poll-ms` to wait for a selector after the tap
 
 Returns action payload fields:
 
@@ -64,6 +65,7 @@ Returns action payload fields:
 - `x`, `y`, and `normalized`
 
 Coordinate `x` and `y` values are screen points by default. With `normalized`, they are fractions of the current screen width and height.
+Coordinate taps work as direct commands and as scenario steps. Target taps report `args.tap_method`; when Visor can resolve an element rectangle, it taps the center coordinate and returns the resolved `x` and `y`.
 
 Examples:
 
@@ -101,6 +103,7 @@ Purpose: perform a helper action.
 Supported variants:
 
 - `name=type` with `target` and `value`
+- `name=type` with `value` only, which types into the active field
 - `name=back`
 - `name=home`
 - `name=reset`
@@ -146,6 +149,8 @@ Purpose: capture a PNG image.
 Optional input:
 
 - `label`
+- `path`
+- `settle` or `settle-ms`
 
 Returns action payload fields:
 
@@ -158,20 +163,32 @@ Returns action payload fields:
 - `args.height`
 
 If `label` is omitted, the runtime defaults it to `capture`.
+If `path` is provided, Visor writes the PNG to that path. Otherwise it writes `<label>.png` in the current working directory for direct Appium actions, or under `--output` when that directory is supplied. Direct command responses include the screenshot path in both `data.args.path` and the top-level `artifacts` array. `settle` waits briefly before capture; `settle-ms` controls the wait duration.
+
+Examples:
+
+```bash
+visor screenshot --label checkout
+visor screenshot --path /tmp/checkout.png
+```
 
 ### `wait`
 
-Purpose: pause execution.
+Purpose: pause, wait for a selector, or wait for source stability.
 
-Required input:
+Inputs:
 
 - `ms`
+- `for` with optional `timeout` and `poll-ms`
+- `stable` with optional `timeout` and `poll-ms`
 
 Returns action payload fields:
 
 - `action`
 - `platform`
-- `args.ms`
+- `args.ms`, or selector/stability wait result fields
+
+`wait --for <selector>` polls until the selector exists or the timeout expires. `wait --stable` polls UI source until two consecutive captures match or the timeout expires.
 
 ### `source`
 
@@ -181,6 +198,7 @@ Optional inputs:
 
 - `label`
 - `path`
+- `settle` or `settle-ms`
 
 Returns action payload fields:
 
@@ -193,6 +211,7 @@ Returns action payload fields:
 - `args.bytes`
 
 For direct action commands, run `visor start` first.
+For direct `screenshot` and `source`, a returned `args.path` is also surfaced as a top-level response artifact. `--output <dir>` writes the capture under that directory when `path` is not provided.
 
 ### `discover`
 
@@ -208,8 +227,11 @@ Optional runtime inputs:
 - `crawl`
 - `crawl-depth`
 - `crawl-limit`
+- `crawl-include`
+- `crawl-allow-risky`
 
 Use `--crawl` to explore safe controls from the current screen and record app-map edges. Crawling is bounded by `--crawl-depth` and `--crawl-limit`.
+Use `--crawl-include <text>` and `--crawl-allow-risky` on sandbox/dev builds when you intentionally want the crawler to include otherwise risky controls such as deposit, sell, withdraw, or logout surfaces.
 
 Response data fields:
 
@@ -220,6 +242,44 @@ Response data fields:
 - `crawl`, when `--crawl` is used
 
 `map.summary` is a path-free inventory of the persisted app map for review: schema version, identity, app id, platform, screen count, variant count, edge count, authentication-required variant count, and last update time.
+
+Persisted variants include source-derived `items` for review and replay tooling, plus `exit_recipes` for visible back/close/dismiss/done controls when coordinates are available.
+
+### `record`
+
+Purpose: start or stop a named replay flow.
+
+Required input:
+
+- `name`
+
+Optional input:
+
+- `stop`
+
+`visor record <name>` creates `.visor/flows/<name>.json` and marks it active. Successful direct action commands append ordered steps to every active flow. `visor record <name> --stop` closes the flow so it can be replayed.
+
+### `replay`
+
+Purpose: run a recorded flow through the normal scenario runner.
+
+Required input:
+
+- `name`
+
+Optional runtime inputs:
+
+- `device`
+- `timeout`
+- `output`
+- `server-url`
+- `app-id`
+- `attach`
+- `no-map`
+- `repair`
+- `param` as `key=value`
+
+`replay` converts recorded steps into a generated scenario and runs it through the Appium-backed daemon path. `--param amount=100` substitutes `{{amount}}` placeholders in recorded args before execution.
 
 ## Scenario commands
 
@@ -342,6 +402,8 @@ Response data fields:
 - `daemon`
 - `appium`
 
+`daemon` includes process and diagnostic metadata such as `running`, `pid`, `socketPath`, `metadataPath`, `logPath`, `packageVersion`, `runtimeVersion`, `currentPackageVersion`, and `stale`. When `visor start` finds an already-running daemon whose package version differs from the current CLI package version, `daemon.stale` is `true` and the response includes `daemon.warning` and `daemon.nextAction`.
+
 ### `status`
 
 Purpose: report Visor daemon state, Appium reachability, and warm sessions.
@@ -355,6 +417,8 @@ Response data fields:
 - `serverUrl`
 - `daemon`
 - `appium`
+
+`daemon.packageVersion` and `daemon.runtimeVersion` describe the running daemon process. `daemon.currentPackageVersion` describes the CLI process that produced the status response. If those package versions differ, `daemon.stale` is `true`, `daemon.warning` explains the mismatch, and `daemon.nextAction` is `restart`. Visor reports this state but does not automatically restart the daemon.
 
 ### `stop`
 
