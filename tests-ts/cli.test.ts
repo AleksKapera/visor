@@ -209,6 +209,45 @@ describe('typescript cli', () => {
     }
   });
 
+  it('resets the deterministic local runtime with an act reset step', async () => {
+    const outputDir = tempOutputDir();
+    const scenarioPath = path.join(outputDir, 'reset-scenario.json');
+    fs.writeFileSync(
+      scenarioPath,
+      JSON.stringify(
+        {
+          meta: { name: 'local reset', version: '1' },
+          config: { seed: 1 },
+          steps: [
+            { id: 'increment', command: 'tap', args: { target: 'Increment' } },
+            { id: 'reset', command: 'act', args: { name: 'reset' } }
+          ],
+          assertions: [{ id: 'counter-reset', type: 'visible', target: '0' }],
+          output: {}
+        },
+        null,
+        2
+      )
+    );
+
+    try {
+      const result = await executeCommand([
+        'run',
+        scenarioPath,
+        '--runtime',
+        'local',
+        '--output',
+        outputDir
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.response.status).toBe('ok');
+      expect(result.response.data.run.status).toBe('ok');
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects unsupported runtime values before device discovery', async () => {
     const result = await executeCommand([
       'run',

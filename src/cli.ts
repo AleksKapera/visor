@@ -124,12 +124,17 @@ const ACTION_SPEC: Record<string, OptionType> = {
   target: 'string',
   x: 'number',
   y: 'number',
+  'start-x': 'number',
+  'start-y': 'number',
+  'end-x': 'number',
+  'end-y': 'number',
   direction: 'string',
   percent: 'number',
   normalized: 'boolean',
   to: 'string',
   name: 'string',
   value: 'string',
+  'start-value': 'number',
   label: 'string',
   ms: 'number',
   path: 'string'
@@ -176,7 +181,8 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     'app-id': 'string',
     attach: 'boolean',
     'no-map': 'boolean',
-    repair: 'boolean'
+    repair: 'boolean',
+    'compare-map': 'boolean'
   },
   report: { format: 'string' },
   start: {
@@ -200,6 +206,14 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
   screenshot: ACTION_SPEC,
   wait: ACTION_SPEC,
   source: ACTION_SPEC
+};
+
+const ACTION_ARG_OPTION_NAMES: Record<string, string> = {
+  'start-x': 'startX',
+  'start-y': 'startY',
+  'end-x': 'endX',
+  'end-y': 'endY',
+  'start-value': 'startValue'
 };
 
 function helpText(): string {
@@ -281,6 +295,56 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --crawl-depth <n>         Maximum crawl depth, default 2',
         '  --crawl-limit <n>         Maximum crawl actions, default 24',
         '  --no-map                  Disable app-map reads and writes'
+      ].join('\n'),
+      examples
+    };
+  }
+
+  if (command === 'act') {
+    const examples = [
+      'visor act --name back',
+      'visor act --name reset --app-id com.example.app',
+      'visor act --name drag --start-x 120 --start-y 640 --end-x 320 --end-y 640',
+      'visor act --name slider --target accessibility=Amount --value 0.5'
+    ];
+    return {
+      usageText: [
+        'Visor act',
+        '',
+        'Usage:',
+        '  visor act --name <type|back|home|reset|drag|slider> [options]',
+        '',
+        'Options:',
+        '  --name <operation>        Helper action name',
+        '  --target <selector>      Target selector for type or slider',
+        '  --value <value>          Text value for type, or 0..1 slider value',
+        '  --start-x <points>       Drag start x coordinate',
+        '  --start-y <points>       Drag start y coordinate',
+        '  --end-x <points>         Drag end x coordinate',
+        '  --end-y <points>         Drag end y coordinate',
+        '  --start-value <0..1>     Slider starting value, default 0.5',
+        '  --normalized             Treat drag coordinates as viewport fractions'
+      ].join('\n'),
+      examples
+    };
+  }
+
+  if (command === 'benchmark') {
+    const examples = [
+      'visor benchmark scenarios/checkout-smoke.json --runs 20',
+      'visor benchmark scenarios/checkout-smoke.json --runs 5 --compare-map'
+    ];
+    return {
+      usageText: [
+        'Visor benchmark',
+        '',
+        'Usage:',
+        '  visor benchmark <scenario> [--runs <n>] [--threshold <percent>] [--compare-map]',
+        '',
+        'Options:',
+        '  --runs <n>               Number of runs, default 20',
+        '  --threshold <percent>    Required determinism score, default 95',
+        '  --compare-map            Run no-map and app-map variants for A/B comparison'
       ].join('\n'),
       examples
     };
@@ -439,7 +503,7 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
   ]);
   const args = Object.entries(options).reduce<Record<string, unknown>>((acc, [key, value]) => {
     if (!commonIgnored.has(key) && value !== undefined) {
-      acc[key] = value;
+      acc[ACTION_ARG_OPTION_NAMES[key] ?? key] = value;
     }
     return acc;
   }, {});
@@ -912,64 +976,132 @@ export async function cmdBenchmark(parsed: ParsedCommand): Promise<CommandResult
   }
   const runs = typeof parsed.options.runs === 'number' ? parsed.options.runs : 20;
   const threshold = typeof parsed.options.threshold === 'number' ? parsed.options.threshold : 95;
-  const signatures: string[] = [];
-  const runIds: string[] = [];
-  let failures = 0;
+  const runtimeRequest = {
+    platform: runtime.platform,
+    server_url: runtime.server_url,
+    device: runtime.device,
+    app_id: runtime.app_id,
+    attach_to_running: runtime.attach_to_running
+  };
+  const runVariant = async (
+    name: string,
+    mapEnabled: boolean,
+    mapOptions: MapExecutionOptions
+  ): Promise<{ variant: JsonRecord } | { error: CommandResult }> => {
+    const signatures: string[] = [];
+    const runIds: string[] = [];
+    let failures = 0;
 
-  for (let index = 0; index < runs; index += 1) {
-    try {
-      const result = await runDaemonScenario(
-        {
-          platform: runtime.platform,
-          server_url: runtime.server_url,
-          device: runtime.device,
-          app_id: runtime.app_id,
-          attach_to_running: runtime.attach_to_running
-        },
-        scenario,
-        runtime.device,
-        runtime.timeout,
-        runtime.output_dir,
+    for (let index = 0; index < runs; index += 1) {
+      try {
+        const result = await runDaemonScenario(
+          runtimeRequest,
+          scenario,
+          runtime.device,
+          runtime.timeout,
+          runtime.output_dir,
+          mapOptions
+        );
+        writeReports(result, runtime.output_dir);
+        signatures.push(result.determinism_signature);
+        runIds.push(result.run_id);
+        if (result.status !== 'ok') {
+          failures += 1;
+        }
+      } catch (error) {
+        if (error instanceof DaemonUnavailableError) {
+          const response = envelopeFail(
+            commandId,
+            startedAt,
+            'TARGET_ERROR',
+            'Benchmark requires visor start',
+            errorMessage(error),
+            'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
+          );
+          return { error: { code: 1, response } };
+        }
+        if (error instanceof DaemonRequestTimeoutError) {
+          const response = envelopeFail(
+            commandId,
+            startedAt,
+            'TARGET_ERROR',
+            'Timed out waiting for Visor daemon',
+            errorMessage(error),
+            'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
+          );
+          return { error: { code: 1, response } };
+        }
+        failures += 1;
+      }
+    }
+
+    const score = determinismCheck(signatures);
+    return {
+      variant: {
+        name,
+        mapEnabled,
+        runs,
+        threshold,
+        determinismScore: score,
+        pass: score >= threshold && failures === 0,
+        failures,
+        runIds
+      }
+    };
+  };
+
+  if (parsed.options['compare-map'] === true) {
+    const variants: JsonRecord[] = [];
+    for (const variantConfig of [
+      { name: 'no-map', mapEnabled: false },
+      { name: 'map', mapEnabled: true }
+    ]) {
+      const outcome = await runVariant(
+        variantConfig.name,
+        variantConfig.mapEnabled,
         {
           ...runtime.map,
+          enabled: variantConfig.mapEnabled,
           appId: runtime.app_id
         }
       );
-      writeReports(result, runtime.output_dir);
-      signatures.push(result.determinism_signature);
-      runIds.push(result.run_id);
-      if (result.status !== 'ok') {
-        failures += 1;
+      if ('error' in outcome) {
+        return outcome.error;
       }
-    } catch (error) {
-      if (error instanceof DaemonUnavailableError) {
-        const response = envelopeFail(
-          commandId,
-          startedAt,
-          'TARGET_ERROR',
-          'Benchmark requires visor start',
-          errorMessage(error),
-          'Run `visor start`, verify the target emulator/simulator is booted, and retry.'
-        );
-        return { code: 1, response };
-      }
-      if (error instanceof DaemonRequestTimeoutError) {
-        const response = envelopeFail(
-          commandId,
-          startedAt,
-          'TARGET_ERROR',
-          'Timed out waiting for Visor daemon',
-          errorMessage(error),
-          'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
-        );
-        return { code: 1, response };
-      }
-      failures += 1;
+      variants.push(outcome.variant);
     }
+
+    const failures = variants.reduce((total, variant) => total + Number(variant.failures ?? 0), 0);
+    const score = Math.min(...variants.map((variant) => Number(variant.determinismScore ?? 0)));
+    const passGate = variants.every((variant) => variant.pass === true);
+    const runIds = variants.flatMap((variant) => Array.isArray(variant.runIds) ? variant.runIds : []);
+
+    const response = envelopeOk(commandId, startedAt, [], 'report');
+    response.data = {
+      runs,
+      threshold,
+      determinismScore: score,
+      pass: passGate,
+      failures,
+      runIds,
+      variants,
+      warnings: warningIssues(issues)
+    };
+    return { code: passGate ? 0 : 3, response };
   }
 
-  const score = determinismCheck(signatures);
-  const passGate = score >= threshold && failures === 0;
+  const outcome = await runVariant('benchmark', runtime.map.enabled !== false, {
+    ...runtime.map,
+    appId: runtime.app_id
+  });
+  if ('error' in outcome) {
+    return outcome.error;
+  }
+
+  const score = Number(outcome.variant.determinismScore ?? 0);
+  const failures = Number(outcome.variant.failures ?? 0);
+  const passGate = outcome.variant.pass === true;
+  const runIds = Array.isArray(outcome.variant.runIds) ? outcome.variant.runIds : [];
 
   const response = envelopeOk(commandId, startedAt, [], 'report');
   response.data = {
