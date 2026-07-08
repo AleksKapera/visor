@@ -1,6 +1,6 @@
 {
   "name": "visor-ai",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Visor CLI for LLM-driven mobile app interaction and artifact capture",
   "type": "module",
   "license": "MIT",
