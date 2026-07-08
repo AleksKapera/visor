@@ -20,6 +20,8 @@ vi.mock('webdriverio', () => webdriverMock);
 function createFakeDriver() {
   return {
     execute: vi.fn(),
+    performActions: vi.fn(),
+    releaseActions: vi.fn(),
     deleteSession: vi.fn(),
     getWindowSize: vi.fn().mockResolvedValue({ width: 200, height: 400 }),
     $: vi.fn(),
@@ -172,6 +174,70 @@ describe('adapter selector helpers', () => {
     await adapter.tap({ x: 0.25, y: 0.5, normalized: true });
 
     expect(driver.execute).toHaveBeenCalledWith('mobile: clickGesture', { x: 50, y: 200 });
+    await adapter.close();
+  });
+
+  it('performs drag act gestures with normalized coordinates', async () => {
+    const driver = createFakeDriver();
+    webdriverMock.remote.mockResolvedValue(driver);
+    const adapter = await RealAppiumAdapter.create(
+      'ios',
+      'http://127.0.0.1:4723',
+      'simulator-udid',
+      'com.example.app'
+    );
+
+    await adapter.act({
+      name: 'drag',
+      startX: 0.25,
+      startY: 0.75,
+      endX: 0.75,
+      endY: 0.25,
+      normalized: true
+    });
+
+    expect(driver.performActions).toHaveBeenCalledWith([
+      expect.objectContaining({
+        actions: expect.arrayContaining([
+          { type: 'pointerMove', duration: 0, x: 50, y: 300 },
+          { type: 'pointerMove', duration: 400, x: 150, y: 100 }
+        ])
+      })
+    ]);
+    expect(driver.releaseActions).toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it('performs slider act gestures across the target element', async () => {
+    const driver = createFakeDriver();
+    const element = {
+      getRect: vi.fn().mockResolvedValue({ x: 10, y: 100, width: 100, height: 20 })
+    };
+    driver.$.mockResolvedValue(element);
+    webdriverMock.remote.mockResolvedValue(driver);
+    const adapter = await RealAppiumAdapter.create(
+      'ios',
+      'http://127.0.0.1:4723',
+      'simulator-udid',
+      'com.example.app'
+    );
+
+    await adapter.act({
+      name: 'slider',
+      target: 'Volume',
+      startValue: 0.2,
+      value: 0.8
+    });
+
+    expect(driver.$).toHaveBeenCalledWith('~Volume');
+    expect(driver.performActions).toHaveBeenCalledWith([
+      expect.objectContaining({
+        actions: expect.arrayContaining([
+          { type: 'pointerMove', duration: 0, x: 30, y: 110 },
+          { type: 'pointerMove', duration: 400, x: 90, y: 110 }
+        ])
+      })
+    ]);
     await adapter.close();
   });
 });

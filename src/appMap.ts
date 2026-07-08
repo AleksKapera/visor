@@ -2229,6 +2229,11 @@ function currentScreenTapArgs(variant: AppMapVariant, descriptor: TargetDescript
     return sectionFirstTapArgs(variant, descriptor);
   }
 
+  const action = matchingAction(variant, descriptor);
+  if (action) {
+    return structuredClone(action.args);
+  }
+
   for (const element of variant.elements) {
     if (!elementContainsTarget(element, descriptor)) {
       continue;
@@ -2248,6 +2253,49 @@ function currentScreenTapArgs(variant: AppMapVariant, descriptor: TargetDescript
   }
 
   return null;
+}
+
+function currentScreenLiveTapArgs(variant: AppMapVariant, descriptor: TargetDescriptor): Record<string, unknown> | null {
+  const action = matchingAction(variant, descriptor);
+  return action && shouldUseActionForLiveSemanticTap(action)
+    ? structuredClone(action.args)
+    : null;
+}
+
+function matchingAction(variant: AppMapVariant, descriptor: TargetDescriptor): AppMapAction | undefined {
+  return variant.actions.find((candidate) => actionMatchesDescriptor(candidate, descriptor));
+}
+
+function actionMatchesDescriptor(action: AppMapAction, descriptor: TargetDescriptor): boolean {
+  if (action.command !== 'tap' || action.safety !== 'safe') {
+    return false;
+  }
+  if (descriptor.kind === 'text-contains') {
+    return false;
+  }
+
+  const target = descriptor.target ?? '';
+  const value = descriptor.value ?? target;
+  const normalizedValue = normalizeControlTarget(value);
+  const normalizedTarget = normalizeControlTarget(target);
+  const normalizedActionLabel = normalizeControlTarget(action.label);
+  const normalizedActionTarget = normalizeControlTarget(action.target ?? '');
+
+  if (!normalizedValue && !normalizedTarget) {
+    return false;
+  }
+
+  return [normalizedActionLabel, normalizedActionTarget].some(
+    (candidate) => candidate !== '' && (candidate === normalizedValue || candidate === normalizedTarget)
+  );
+}
+
+function shouldUseActionForLiveSemanticTap(action: AppMapAction): boolean {
+  return (
+    typeof action.args.x === 'number' &&
+    typeof action.args.y === 'number' &&
+    action.source.tag.toLowerCase().includes('xcuielementtype')
+  );
 }
 
 function shouldUseStableTargetFallback(element: SourceElement, descriptor: TargetDescriptor): boolean {
@@ -2646,8 +2694,10 @@ export async function runMappedCommand(
   }
 
   const executableArgs =
-    command === 'tap' && !liveTargetVisible
-      ? currentScreenTapArgs(before.variant, descriptor) ?? args
+    command === 'tap'
+      ? liveTargetVisible
+        ? currentScreenLiveTapArgs(before.variant, descriptor) ?? args
+        : currentScreenTapArgs(before.variant, descriptor) ?? args
       : args;
   const details = await context.adapter[command](executableArgs);
   const after = await observeCurrentScreen(context);

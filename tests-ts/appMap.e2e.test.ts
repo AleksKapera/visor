@@ -431,6 +431,20 @@ const semanticAliasCoordinateGraph = {
   }
 };
 
+const inertFlutterSemanticGraph = {
+  profile: {
+    source:
+      '<App><XCUIElementTypeButton name="Trade Activity&#10;Trade Activity" label="Trade Activity&#10;Trade Activity" enabled="true" visible="true" accessible="true" x="228" y="300" width="124" height="44" /></App>',
+    liveTargets: ['Trade Activity'],
+    coordinateTaps: { '290,322': 'activity' },
+    taps: {}
+  },
+  activity: {
+    source: '<App><StaticText name="Trade Activity" label="Trade Activity" /></App>',
+    taps: {}
+  }
+};
+
 const coordinateRouteGraph = {
   home: {
     source: '<App><StaticText name="Home" label="Home" /></App>',
@@ -2273,6 +2287,33 @@ describe('app map execution', () => {
         args: { x: 352, y: 332 }
       })
     );
+  });
+
+  it('prefers observed action coordinates over inert Flutter semantic tap targets', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.inert-flutter-label'
+    };
+
+    const adapter = new ScreenGraphAdapter(inertFlutterSemanticGraph, 'profile');
+    const run = await runScenario(
+      scenarioWithTap('Trade Activity'),
+      adapter,
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      mapOptions
+    );
+
+    expect(run.status).toBe('ok');
+    expect(adapter.actions).toEqual(['source:profile', 'tap:290,322', 'source:activity']);
+    expect(run.steps[0]?.details.map).toMatchObject({
+      routed: false,
+      repaired: false
+    });
   });
 
   it('learns a destination screen whose labels contain the source screen labels', async () => {

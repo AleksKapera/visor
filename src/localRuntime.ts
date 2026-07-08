@@ -52,6 +52,15 @@ export class LocalRuntimeAdapter implements PlatformAdapter {
   }
 
   async act(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const name = String(args.name ?? '');
+    if (name === 'reset') {
+      this.counter = 0;
+      this.route = 'app://home';
+    }
+    if (name === 'home') {
+      this.route = 'app://home';
+    }
+
     return {
       action: 'act',
       platform: 'android',

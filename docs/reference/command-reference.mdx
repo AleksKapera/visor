@@ -102,6 +102,12 @@ Supported variants:
 
 - `name=type` with `target` and `value`
 - `name=back`
+- `name=home`
+- `name=reset`
+- `name=drag` with `start-x`, `start-y`, `end-x`, and `end-y`
+- `name=slider` with `target`, `value` from `0` to `1`, and optional `start-value`
+
+`drag` also accepts `normalized` so coordinates can be fractions of the viewport. `reset` requires `app-id` because Visor restarts the target app.
 
 Returns action payload fields:
 
@@ -286,6 +292,7 @@ Optional inputs:
 - `server-url`
 - `app-id`
 - `attach`
+- `compare-map`
 
 Response data fields:
 
@@ -296,8 +303,11 @@ Response data fields:
 - `failures`
 - `runIds`
 - `warnings`
+- `variants` when `compare-map` is enabled
 
 Benchmark runs are Appium-backed. They do not accept `--runtime local`; use `run` with `--runtime local` for deterministic local harness checks.
+
+Use `--compare-map` to run the same scenario twice per iteration group: once with app-map reads and writes disabled, and once with app-map enabled. Each entry in `variants` includes `name`, `mapEnabled`, `runs`, `threshold`, `determinismScore`, `pass`, `failures`, and `runIds`.
 
 For benchmark runs, run `visor start` first.
 

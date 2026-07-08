@@ -20,6 +20,7 @@ export const IOS_CLASS_CHAIN = '-ios class chain';
 type TapMode = 'target' | 'coordinates';
 type ScrollDirection = 'up' | 'down';
 type RemoteSession = Awaited<ReturnType<typeof remoteFn>>;
+type Point = { x: number; y: number };
 
 const TEXT_ATTRIBUTES = ['text', 'content-desc', 'label', 'name', 'value'];
 
@@ -354,8 +355,57 @@ export class RealAppiumAdapter implements PlatformAdapter {
       };
     }
 
+    if (name === 'drag') {
+      const gesture = await this.resolveDragGesture(args);
+      await this.dragPointer(gesture.start, gesture.end);
+      return {
+        action: 'act',
+        platform: this.platform,
+        args: {
+          name,
+          startX: gesture.start.x,
+          startY: gesture.start.y,
+          endX: gesture.end.x,
+          endY: gesture.end.y
+        }
+      };
+    }
+
+    if (name === 'slider') {
+      const gesture = await this.resolveSliderGesture(args);
+      await this.dragPointer(gesture.start, gesture.end);
+      return {
+        action: 'act',
+        platform: this.platform,
+        args: {
+          name,
+          target,
+          value: gesture.value,
+          startValue: gesture.startValue
+        }
+      };
+    }
+
+    if (name === 'home') {
+      await this.pressHome();
+      return {
+        action: 'act',
+        platform: this.platform,
+        args: { name }
+      };
+    }
+
+    if (name === 'reset') {
+      await this.resetApp();
+      return {
+        action: 'act',
+        platform: this.platform,
+        args: { name, app_id: this.appId }
+      };
+    }
+
     throw new Error(
-      'Unsupported act operation; use --name type --target <selector> --value <text> or --name back'
+      'Unsupported act operation; use --name type --target <selector> --value <text>, --name drag, --name slider, --name back, --name home, or --name reset'
     );
   }
 
@@ -575,6 +625,93 @@ export class RealAppiumAdapter implements PlatformAdapter {
     throw new Error('Element rectangle is unavailable');
   }
 
+  private async pressHome(): Promise<void> {
+    const driver = this.requireDriver() as any;
+    if (this.platform === 'ios') {
+      await driver.execute('mobile: pressButton', { name: 'home' });
+      return;
+    }
+
+    if (typeof driver.pressKeyCode === 'function') {
+      await driver.pressKeyCode(3);
+      return;
+    }
+
+    await driver.execute('mobile: pressKey', { keycode: 3 });
+  }
+
+  private async resetApp(): Promise<void> {
+    if (!this.appId) {
+      throw new Error('act reset requires --app-id so Visor can restart the target app');
+    }
+
+    const driver = this.requireDriver() as any;
+    if (typeof driver.terminateApp === 'function') {
+      await driver.terminateApp(this.appId);
+    } else {
+      await driver.execute(
+        'mobile: terminateApp',
+        this.platform === 'ios' ? { bundleId: this.appId } : { appId: this.appId }
+      );
+    }
+
+    await sleep(500);
+
+    if (typeof driver.activateApp === 'function') {
+      await driver.activateApp(this.appId);
+      return;
+    }
+
+    await driver.execute(
+      'mobile: activateApp',
+      this.platform === 'ios' ? { bundleId: this.appId } : { appId: this.appId }
+    );
+  }
+
+  private async resolveDragGesture(args: Record<string, unknown>): Promise<{ start: Point; end: Point }> {
+    const normalized = Boolean(args.normalized);
+    const size = normalized ? await (this.requireDriver() as any).getWindowSize() : null;
+    const start = {
+      x: gestureNumber(args, ['startX', 'start-x', 'fromX', 'from-x'], 'act drag requires startX/startY and endX/endY'),
+      y: gestureNumber(args, ['startY', 'start-y', 'fromY', 'from-y'], 'act drag requires startX/startY and endX/endY')
+    };
+    const end = {
+      x: gestureNumber(args, ['endX', 'end-x', 'toX', 'to-x'], 'act drag requires startX/startY and endX/endY'),
+      y: gestureNumber(args, ['endY', 'end-y', 'toY', 'to-y'], 'act drag requires startX/startY and endX/endY')
+    };
+
+    return {
+      start: normalized && size ? scalePoint(start, size.width, size.height) : roundPoint(start),
+      end: normalized && size ? scalePoint(end, size.width, size.height) : roundPoint(end)
+    };
+  }
+
+  private async resolveSliderGesture(
+    args: Record<string, unknown>
+  ): Promise<{ start: Point; end: Point; value: number; startValue: number }> {
+    const target = typeof args.target === 'string' ? args.target : '';
+    if (!target) {
+      throw new Error('act slider requires args.target');
+    }
+
+    const value = unitIntervalNumber(args.value, 'act slider args.value must be a number between 0 and 1');
+    const startValue = unitIntervalNumber(
+      args.startValue ?? args['start-value'] ?? 0.5,
+      'act slider args.startValue must be a number between 0 and 1'
+    );
+    const selector = selectorForTarget(target);
+    const element = await this.requireDriver().$(selector.selector);
+    const rect = await this.elementRect(element);
+    const y = Math.round(rect.y + rect.height / 2);
+
+    return {
+      start: { x: Math.round(rect.x + rect.width * startValue), y },
+      end: { x: Math.round(rect.x + rect.width * value), y },
+      value,
+      startValue
+    };
+  }
+
   private async scrollViewport(direction: ScrollDirection, gesturePercent: number): Promise<void> {
     const driver = this.requireDriver() as any;
     const size = await driver.getWindowSize();
@@ -615,13 +752,31 @@ export class RealAppiumAdapter implements PlatformAdapter {
     throw new Error(`Scroll is unsupported for platform: ${this.platform}`);
   }
 
+  private async dragPointer(start: Point, end: Point): Promise<void> {
+    const driver = this.requireDriver() as any;
+    await driver.performActions([
+      {
+        type: 'pointer',
+        id: 'finger1',
+        parameters: { pointerType: 'touch' },
+        actions: [
+          { type: 'pointerMove', duration: 0, x: start.x, y: start.y },
+          { type: 'pointerDown', button: 0 },
+          { type: 'pause', duration: 100 },
+          { type: 'pointerMove', duration: 400, x: end.x, y: end.y },
+          { type: 'pointerUp', button: 0 }
+        ]
+      }
+    ]);
+    await driver.releaseActions();
+  }
+
   private async swipeViewport(
     direction: ScrollDirection,
     gesturePercent: number,
     viewportWidth: number,
     viewportHeight: number
   ): Promise<void> {
-    const driver = this.requireDriver() as any;
     const x = Math.round(viewportWidth / 2);
     const lowY = Math.round(viewportHeight * 0.75);
     const highY = Math.round(viewportHeight * 0.25);
@@ -630,22 +785,39 @@ export class RealAppiumAdapter implements PlatformAdapter {
     const unclampedEndY = direction === 'down' ? startY - travel : startY + travel;
     const endY = Math.max(1, Math.min(viewportHeight - 1, unclampedEndY));
 
-    await driver.performActions([
-      {
-        type: 'pointer',
-        id: 'finger1',
-        parameters: { pointerType: 'touch' },
-        actions: [
-          { type: 'pointerMove', duration: 0, x, y: startY },
-          { type: 'pointerDown', button: 0 },
-          { type: 'pause', duration: 150 },
-          { type: 'pointerMove', duration: 400, x, y: endY },
-          { type: 'pointerUp', button: 0 }
-        ]
-      }
-    ]);
-    await driver.releaseActions();
+    await this.dragPointer({ x, y: startY }, { x, y: endY });
   }
+}
+
+function gestureNumber(args: Record<string, unknown>, keys: string[], message: string): number {
+  const raw = keys.map((key) => args[key]).find((value) => value !== undefined);
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(message);
+  }
+  return parsed;
+}
+
+function unitIntervalNumber(value: unknown, message: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(message);
+  }
+  return parsed;
+}
+
+function scalePoint(point: Point, width: number, height: number): Point {
+  return {
+    x: Math.round(point.x * width),
+    y: Math.round(point.y * height)
+  };
+}
+
+function roundPoint(point: Point): Point {
+  return {
+    x: Math.round(point.x),
+    y: Math.round(point.y)
+  };
 }
 
 export async function getAdapter(
