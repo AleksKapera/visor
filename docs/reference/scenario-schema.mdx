@@ -99,6 +99,12 @@ Runtime support is narrower than schema support. The runtime currently accepts:
 
 - `name=type` with `target` and `value`
 - `name=back`
+- `name=home`
+- `name=reset`
+- `name=drag` with `startX`, `startY`, `endX`, and `endY`
+- `name=slider` with `target`, `value` from `0` to `1`, and optional `startValue`
+
+`drag` also accepts `normalized`. `reset` restarts the target app and requires `--app-id` on Appium-backed runs.
 
 #### `scroll`
 

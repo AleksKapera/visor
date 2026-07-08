@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { vi } from 'vitest';
 
 import { resetDeviceCommandRunner, setDeviceCommandRunner } from '../src/devices.js';
@@ -38,6 +42,21 @@ function detectAndroidDevice(): void {
     }
     return '';
   });
+}
+
+function benchmarkRun(runId: string): Record<string, unknown> {
+  return {
+    run_id: runId,
+    platform: 'android',
+    device: 'emulator-5554',
+    started_at: new Date(0).toISOString(),
+    ended_at: new Date(0).toISOString(),
+    status: 'ok',
+    steps: [],
+    assertions: [],
+    artifacts: [],
+    determinism_signature: `sig-${runId}`
+  };
 }
 
 describe('cli app map options', () => {
@@ -176,6 +195,61 @@ describe('cli app map options', () => {
     );
   });
 
+  it('passes drag act coordinates through direct actions', async () => {
+    daemonMock.runDaemonAction.mockResolvedValue({
+      action: 'act',
+      args: {
+        name: 'drag',
+        startX: 10,
+        startY: 200,
+        endX: 300,
+        endY: 200
+      },
+      map: {
+        enabled: true,
+        used: false,
+        updated: false,
+        repaired: false,
+        repairs: 0
+      }
+    });
+
+    const result = await executeCommand([
+      'act',
+      '--device',
+      'emulator-5554',
+      '--app-id',
+      'com.example.settings',
+      '--name',
+      'drag',
+      '--start-x',
+      '10',
+      '--start-y',
+      '200',
+      '--end-x',
+      '300',
+      '--end-y',
+      '200'
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(daemonMock.runDaemonAction).toHaveBeenCalledWith(
+      expect.any(Object),
+      'act',
+      {
+        name: 'drag',
+        startX: 10,
+        startY: 200,
+        endX: 300,
+        endY: 200
+      },
+      {
+        enabled: true,
+        appId: 'com.example.settings'
+      }
+    );
+  });
+
   it('keeps disabled map metadata on no-map direct action failures', async () => {
     daemonMock.runDaemonAction.mockRejectedValue(
       new daemonMock.DaemonOperationError('target not visible on home: Advanced', {
@@ -290,6 +364,92 @@ describe('cli app map options', () => {
     );
   });
 
+  it('adds a shareable app-map summary to discover responses without depending on host paths', async () => {
+    const mapRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-cli-map-summary-'));
+    const mapPath = path.join(mapRoot, 'map.json');
+    fs.writeFileSync(
+      mapPath,
+      `${JSON.stringify({
+        schema_version: 1,
+        identity: 'android:com.example.settings',
+        app_id: 'com.example.settings',
+        platform: 'android',
+        created_at: '2026-07-07T00:00:00.000Z',
+        updated_at: '2026-07-07T00:01:00.000Z',
+        screens: [
+          { id: 'screen_1', variant_ids: ['variant_1'] },
+          { id: 'screen_2', variant_ids: ['variant_2'] }
+        ],
+        variants: [
+          {
+            id: 'variant_1',
+            screen_id: 'screen_1',
+            auth_required: false,
+            actions: [{ intent: 'like' }, { intent: 'comment' }]
+          },
+          {
+            id: 'variant_2',
+            screen_id: 'screen_2',
+            auth_required: true,
+            actions: [{ intent: 'share' }]
+          }
+        ],
+        edges: [
+          { id: 'edge_1', from_variant_id: 'variant_1', to_variant_id: 'variant_2' },
+          { id: 'edge_2', from_variant_id: 'variant_2', to_variant_id: 'variant_1' }
+        ]
+      })}\n`,
+      'utf8'
+    );
+    daemonMock.runDaemonDiscover.mockResolvedValue({
+      action: 'discover',
+      map: {
+        enabled: true,
+        used: false,
+        updated: true,
+        repaired: false,
+        repairs: 0,
+        schema_version: 1,
+        identity: 'android:com.example.settings',
+        path: mapPath
+      },
+      screen: {
+        variant_id: 'variant_2',
+        screen_id: 'screen_2',
+        element_count: 5
+      }
+    });
+
+    try {
+      const result = await executeCommand([
+        'discover',
+        '--device',
+        'emulator-5554',
+        '--app-id',
+        'com.example.settings'
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.response.data.map).toMatchObject({
+        summary: {
+          schema_version: 1,
+          identity: 'android:com.example.settings',
+          app_id: 'com.example.settings',
+          platform: 'android',
+          screens: 2,
+          variants: 2,
+          edges: 2,
+          actions: 3,
+          auth_required_variants: 1,
+          updated_at: '2026-07-07T00:01:00.000Z'
+        }
+      });
+      expect(JSON.stringify((result.response.data.map as { summary?: unknown }).summary)).not.toContain(mapPath);
+    } finally {
+      fs.rmSync(mapRoot, { recursive: true, force: true });
+    }
+  });
+
   it('passes crawl discovery options through discover', async () => {
     daemonMock.runDaemonDiscover.mockResolvedValue({
       action: 'discover',
@@ -339,5 +499,53 @@ describe('cli app map options', () => {
         crawlLimit: 10
       }
     );
+  });
+
+  it('runs benchmark map A/B variants with fixed scenario and run count', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-ab-benchmark-'));
+    let index = 0;
+    daemonMock.runDaemonScenario.mockImplementation(async () => benchmarkRun(`run_${++index}`));
+
+    try {
+      const result = await executeCommand([
+        'benchmark',
+        'scenarios/local-fake-smoke.json',
+        '--device',
+        'emulator-5554',
+        '--app-id',
+        'com.example.settings',
+        '--runs',
+        '1',
+        '--compare-map',
+        '--output',
+        outputDir
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.response.data.variants).toEqual([
+        expect.objectContaining({ name: 'no-map', mapEnabled: false, runs: 1, failures: 0 }),
+        expect.objectContaining({ name: 'map', mapEnabled: true, runs: 1, failures: 0 })
+      ]);
+      expect(daemonMock.runDaemonScenario).toHaveBeenNthCalledWith(
+        1,
+        expect.any(Object),
+        expect.any(Object),
+        'emulator-5554',
+        expect.any(Number),
+        outputDir,
+        expect.objectContaining({ enabled: false, appId: 'com.example.settings' })
+      );
+      expect(daemonMock.runDaemonScenario).toHaveBeenNthCalledWith(
+        2,
+        expect.any(Object),
+        expect.any(Object),
+        'emulator-5554',
+        expect.any(Number),
+        outputDir,
+        expect.objectContaining({ enabled: true, appId: 'com.example.settings' })
+      );
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
   });
 });

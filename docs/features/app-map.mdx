@@ -51,4 +51,6 @@ Use `visor discover` to explicitly observe the current screen and update the map
 
 Use `visor discover --crawl` to explore safe controls from the current screen and record app-map edges before later runs. Crawling is bounded by `--crawl-depth` and `--crawl-limit`.
 
+Discover responses include `data.map.summary` when the persisted map can be read. Use this path-free summary to review map growth and share the map shape without exposing machine-specific `.visor` or temporary directories.
+
 Use `--no-map` or `VISOR_NO_MAP=true` to disable both map reads and map writes for a command.

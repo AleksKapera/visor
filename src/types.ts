@@ -88,6 +88,18 @@ export interface MapExecutionSummary {
   schema_version?: number;
   path?: string;
   identity?: string;
+  summary?: {
+    schema_version?: number;
+    identity?: string;
+    app_id?: string;
+    platform?: Platform;
+    screens: number;
+    variants: number;
+    edges: number;
+    actions: number;
+    auth_required_variants: number;
+    updated_at?: string;
+  };
 }
 
 export interface MapExecutionOptions {
@@ -100,6 +112,8 @@ export interface MapExecutionOptions {
   crawl?: boolean;
   crawlDepth?: number;
   crawlLimit?: number;
+  crawlSettleMs?: number;
+  crawlSettlePollMs?: number;
 }
 
 export interface AssertionResult {
