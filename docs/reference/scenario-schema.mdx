@@ -97,14 +97,15 @@ Validation only checks that `args` is present.
 
 Runtime support is narrower than schema support. The runtime currently accepts:
 
-- `name=type` with `target` and `value`
+- `name=type` with `target` and `value`, which types into the matching element
+- `name=type` with `value` only, which types into the currently focused field
 - `name=back`
 - `name=home`
 - `name=reset`
 - `name=drag` with `startX`, `startY`, `endX`, and `endY`
 - `name=slider` with `target`, `value` from `0` to `1`, and optional `startValue`
 
-`drag` also accepts `normalized`. `reset` restarts the target app and requires `--app-id` on Appium-backed runs.
+For `type`, `value` is required and `target` is optional. `drag` also accepts `normalized`. `reset` restarts the target app and requires `--app-id` on Appium-backed runs.
 
 #### `scroll`
 
@@ -128,9 +129,38 @@ No hard schema requirement beyond `args`, but missing `label` triggers a warning
 
 #### `wait`
 
-Required field inside `args`:
+Use exactly one wait mode inside `args`:
 
 - `ms`
+- `for`
+- `stable`
+
+Optional timing controls:
+
+- `timeout`
+- `pollMs`
+- `poll-ms`
+
+Valid forms:
+
+```json
+{ "ms": 500 }
+```
+
+```json
+{ "for": "text=Ready", "timeout": 8000, "pollMs": 250 }
+```
+
+```json
+{ "stable": true, "timeout": 2000, "poll-ms": 100 }
+```
+
+Rules:
+
+- exactly one of `ms`, `for`, or `stable` is required
+- `for` must be a non-empty selector string
+- `stable`, when used, must be `true`
+- timing values must be non-negative numbers
 
 #### `source`
 

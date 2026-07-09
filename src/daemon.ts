@@ -43,6 +43,8 @@ interface DaemonMetadata {
   socketPath: string;
   appiumStarted: boolean;
   startedAt: number;
+  packageVersion?: string;
+  runtimeVersion?: string;
 }
 
 type DaemonRequest =
@@ -139,6 +141,21 @@ function metadataPath(): string {
 
 function logPath(): string {
   return path.join(daemonDir(), 'daemon.log');
+}
+
+function packageVersion(): string {
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      version?: unknown;
+    };
+    return typeof packageJson.version === 'string' ? packageJson.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function runtimeVersion(): string {
+  return process.version;
 }
 
 function readMetadata(): DaemonMetadata | null {
@@ -260,13 +277,33 @@ async function daemonRequestData<T>(request: DaemonRequest, timeoutMs = 1000): P
   return response.data as T;
 }
 
-async function isDaemonReachable(): Promise<boolean> {
-  try {
-    await daemonRequestData<Record<string, unknown>>({ type: 'status' }, 500);
-    return true;
-  } catch {
-    return false;
-  }
+async function requestDaemonStatus(timeoutMs = 1000): Promise<Record<string, unknown>> {
+  return daemonRequestData<Record<string, unknown>>({ type: 'status' }, timeoutMs);
+}
+
+function withDaemonVersionStatus(daemonData: Record<string, unknown>): Record<string, unknown> {
+  const currentPackageVersion = packageVersion();
+  const hasDaemonPackageVersion =
+    typeof daemonData.packageVersion === 'string' && daemonData.packageVersion.trim() !== '';
+  const daemonPackageVersion = hasDaemonPackageVersion
+    ? String(daemonData.packageVersion)
+    : 'unknown';
+  const stale = !hasDaemonPackageVersion || daemonPackageVersion !== currentPackageVersion;
+
+  return {
+    ...daemonData,
+    packageVersion: daemonPackageVersion,
+    currentPackageVersion,
+    stale,
+    ...(stale
+      ? {
+          warning: hasDaemonPackageVersion
+            ? `Visor daemon package version ${daemonPackageVersion} differs from current CLI version ${currentPackageVersion}. Run \`visor stop\` and then \`visor start\` to refresh the daemon.`
+            : `Visor daemon does not report a package version. Current CLI version is ${currentPackageVersion}. Run \`visor stop\` and then \`visor start\` to refresh the daemon.`,
+          nextAction: 'restart'
+        }
+      : {})
+  };
 }
 
 function daemonEntryCommand(): { command: string; args: string[] } {
@@ -299,19 +336,25 @@ export async function startVisorDaemon(
   appiumCmd?: string
 ): Promise<Record<string, unknown>> {
   const existing = readMetadata();
-  if (existing && pidExists(existing.pid) && (await isDaemonReachable())) {
-    return {
-      serverUrl,
-      daemon: {
-        running: true,
-        alreadyRunning: true,
-        pid: existing.pid,
-        socketPath: existing.socketPath,
-        metadataPath: metadataPath(),
-        logPath: logPath()
-      },
-      appium: await statusManagedAppium(serverUrl)
-    };
+  if (existing && pidExists(existing.pid)) {
+    try {
+      const daemonData = await requestDaemonStatus(500);
+      return {
+        serverUrl,
+        daemon: {
+          running: true,
+          alreadyRunning: true,
+          pid: existing.pid,
+          socketPath: existing.socketPath,
+          metadataPath: metadataPath(),
+          logPath: logPath(),
+          ...withDaemonVersionStatus(daemonData)
+        },
+        appium: await statusManagedAppium(serverUrl)
+      };
+    } catch {
+      // Fall through to cleanup and start a fresh daemon below.
+    }
   }
 
   if (process.platform !== 'win32' && fs.existsSync(socketPath())) {
@@ -343,6 +386,8 @@ export async function startVisorDaemon(
       ...process.env,
       VISOR_DAEMON_SERVER_URL: serverUrl,
       VISOR_DAEMON_APPIUM_STARTED: String(Boolean(appium.started)),
+      VISOR_DAEMON_PACKAGE_VERSION: packageVersion(),
+      VISOR_DAEMON_RUNTIME_VERSION: runtimeVersion(),
       VISOR_DAEMON_SOCKET_PATH: socketPath()
     }
   });
@@ -353,14 +398,23 @@ export async function startVisorDaemon(
     serverUrl,
     socketPath: socketPath(),
     appiumStarted: Boolean(appium.started),
-    startedAt: Date.now()
+    startedAt: Date.now(),
+    packageVersion: packageVersion(),
+    runtimeVersion: runtimeVersion()
   };
   writeMetadata(meta);
   child.unref();
 
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    if (await isDaemonReachable()) {
+    let daemonData: Record<string, unknown> | null = null;
+    try {
+      daemonData = await requestDaemonStatus(500);
+    } catch {
+      daemonData = null;
+    }
+
+    if (daemonData) {
       return {
         serverUrl,
         daemon: {
@@ -369,7 +423,8 @@ export async function startVisorDaemon(
           pid: meta.pid,
           socketPath: meta.socketPath,
           metadataPath: metadataPath(),
-          logPath: targetLogPath
+          logPath: targetLogPath,
+          ...withDaemonVersionStatus(daemonData)
         },
         appium
       };
@@ -395,7 +450,7 @@ export async function statusVisorDaemon(serverUrl = DEFAULT_SERVER_URL): Promise
 
   const pidPresent = meta ? pidExists(meta.pid) : false;
   try {
-    daemonData = await daemonRequestData<Record<string, unknown>>({ type: 'status' }, 2000);
+    daemonData = withDaemonVersionStatus(await requestDaemonStatus(2000));
     running = true;
   } catch (error) {
     running = false;
@@ -537,6 +592,8 @@ export async function runDaemonFromEnv(): Promise<void> {
     serverUrl: process.env.VISOR_DAEMON_SERVER_URL ?? DEFAULT_SERVER_URL,
     appiumStarted: parseBoolean(process.env.VISOR_DAEMON_APPIUM_STARTED)
   };
+  const daemonPackageVersion = process.env.VISOR_DAEMON_PACKAGE_VERSION ?? packageVersion();
+  const daemonRuntimeVersion = process.env.VISOR_DAEMON_RUNTIME_VERSION ?? runtimeVersion();
   const sessions = new Map<string, SessionEntry>();
   let queue = Promise.resolve();
   let activeOperation: string | null = null;
@@ -683,6 +740,8 @@ export async function runDaemonFromEnv(): Promise<void> {
             response = {
               ok: true,
               data: {
+                packageVersion: daemonPackageVersion,
+                runtimeVersion: daemonRuntimeVersion,
                 activeOperation,
                 lastError,
                 sessions: Array.from(sessions.entries()).map(([key, entry]) => ({

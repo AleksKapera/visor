@@ -114,6 +114,8 @@ export interface MapExecutionOptions {
   crawlLimit?: number;
   crawlSettleMs?: number;
   crawlSettlePollMs?: number;
+  crawlInclude?: string[];
+  crawlAllowRisky?: boolean;
 }
 
 export interface AssertionResult {

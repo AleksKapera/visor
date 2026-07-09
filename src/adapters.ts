@@ -18,6 +18,7 @@ export const IOS_PREDICATE = '-ios predicate string';
 export const IOS_CLASS_CHAIN = '-ios class chain';
 
 type TapMode = 'target' | 'coordinates';
+type ElementTapResult = { tap_method: 'coordinate'; x: number; y: number } | { tap_method: 'element' };
 type ScrollDirection = 'up' | 'down';
 type RemoteSession = Awaited<ReturnType<typeof remoteFn>>;
 type Point = { x: number; y: number };
@@ -321,11 +322,11 @@ export class RealAppiumAdapter implements PlatformAdapter {
     const target = String(args.target);
     const selector = selectorForTarget(target);
     const element = await this.requireDriver().$(selector.selector);
-    await this.tapElementCenter(element);
+    const tapResult = await this.tapElementCenter(element);
     return {
       action: 'tap',
       platform: this.platform,
-      args: { target }
+      args: { target, ...tapResult }
     };
   }
 
@@ -343,6 +344,15 @@ export class RealAppiumAdapter implements PlatformAdapter {
         action: 'act',
         platform: this.platform,
         args: { name, target, value }
+      };
+    }
+
+    if (name === 'type') {
+      await this.typeIntoFocusedElement(value);
+      return {
+        action: 'act',
+        platform: this.platform,
+        args: { name, value }
       };
     }
 
@@ -405,7 +415,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
     }
 
     throw new Error(
-      'Unsupported act operation; use --name type --target <selector> --value <text>, --name drag, --name slider, --name back, --name home, or --name reset'
+      'Unsupported act operation; use --name type [--target <selector>] --value <text>, --name drag, --name slider, --name back, --name home, or --name reset'
     );
   }
 
@@ -422,6 +432,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
 
   async screenshot(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const label = String(args.label ?? 'capture');
+    const settleMs = await this.settleBeforeCapture(args);
     const filePath = path.resolve(typeof args.path === 'string' ? args.path : `${label}.png`);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     await (this.requireDriver() as any).saveScreenshot(filePath);
@@ -435,12 +446,31 @@ export class RealAppiumAdapter implements PlatformAdapter {
         file: path.basename(filePath),
         path: filePath,
         width,
-        height
+        height,
+        ...(settleMs > 0 ? { settle_ms: settleMs } : {})
       }
     };
   }
 
   async wait(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (args.stable === true) {
+      const waitResult = await this.waitForStableSource(args);
+      return {
+        action: 'wait',
+        platform: this.platform,
+        args: waitResult
+      };
+    }
+
+    if (typeof args.for === 'string' && args.for) {
+      const waitResult = await this.waitForTarget(args.for, args);
+      return {
+        action: 'wait',
+        platform: this.platform,
+        args: waitResult
+      };
+    }
+
     const ms = Number(args.ms ?? 0);
     if (ms < 0) {
       throw new Error('wait requires non-negative ms');
@@ -456,6 +486,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
 
   async source(args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const label = String(args.label ?? 'source');
+    const settleMs = await this.settleBeforeCapture(args);
     const filePath = path.resolve(typeof args.path === 'string' ? args.path : `${label}.xml`);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const content = await (this.requireDriver() as any).getPageSource();
@@ -469,7 +500,8 @@ export class RealAppiumAdapter implements PlatformAdapter {
         file: path.basename(filePath),
         path: filePath,
         format: 'xml',
-        bytes: fs.statSync(filePath).size
+        bytes: fs.statSync(filePath).size,
+        ...(settleMs > 0 ? { settle_ms: settleMs } : {})
       }
     };
   }
@@ -594,14 +626,16 @@ export class RealAppiumAdapter implements PlatformAdapter {
     throw new Error(`Coordinate tap is unsupported for platform: ${this.platform}`);
   }
 
-  private async tapElementCenter(element: any): Promise<void> {
+  private async tapElementCenter(element: any): Promise<ElementTapResult> {
     try {
       const rect = await this.elementRect(element);
       const x = Math.round(rect.x + rect.width / 2);
       const y = Math.round(rect.y + rect.height / 2);
       await this.tapPoint(x, y);
+      return { tap_method: 'coordinate', x, y };
     } catch {
       await element.click();
+      return { tap_method: 'element' };
     }
   }
 
@@ -623,6 +657,154 @@ export class RealAppiumAdapter implements PlatformAdapter {
     }
 
     throw new Error('Element rectangle is unavailable');
+  }
+
+  private async waitForTarget(
+    target: string,
+    args: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const timeoutMs = nonNegativeMs(
+      args.timeout ?? args.timeoutMs ?? args['timeout-ms'] ?? args.ms,
+      5000,
+      'wait for requires a non-negative timeout'
+    );
+    const intervalMs = nonNegativeMs(
+      args.interval ?? args.pollMs ?? args['poll-ms'],
+      250,
+      'wait for requires a non-negative poll interval'
+    );
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    let matched = await this.exists(target);
+
+    while (!matched && Date.now() < deadline) {
+      await sleep(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+      matched = await this.exists(target);
+    }
+
+    return {
+      for: target,
+      timeout_ms: timeoutMs,
+      poll_interval_ms: intervalMs,
+      matched,
+      elapsed_ms: Date.now() - startedAt
+    };
+  }
+
+  private async waitForStableSource(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const timeoutMs = nonNegativeMs(
+      args.timeout ?? args.timeoutMs ?? args['timeout-ms'] ?? args.ms,
+      5000,
+      'wait stable requires a non-negative timeout'
+    );
+    const intervalMs = nonNegativeMs(
+      args.interval ?? args.pollMs ?? args['poll-ms'],
+      250,
+      'wait stable requires a non-negative poll interval'
+    );
+    const driver = this.requireDriver() as any;
+    if (typeof driver.getPageSource !== 'function') {
+      throw new Error('wait stable requires driver getPageSource support');
+    }
+
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    let previous = String(await driver.getPageSource());
+    let matched = false;
+
+    while (Date.now() < deadline) {
+      await sleep(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+      const next = String(await driver.getPageSource());
+      if (next === previous) {
+        matched = true;
+        previous = next;
+        break;
+      }
+      previous = next;
+    }
+
+    return {
+      stable: true,
+      timeout_ms: timeoutMs,
+      poll_interval_ms: intervalMs,
+      matched,
+      elapsed_ms: Date.now() - startedAt
+    };
+  }
+
+  private async settleBeforeCapture(args: Record<string, unknown>): Promise<number> {
+    const raw = args.settleMs ?? args.settle_ms ?? args['settle-ms'] ?? args.settle;
+    if (raw === undefined || raw === null || raw === false) {
+      return 0;
+    }
+
+    const settleMs = raw === true
+      ? 250
+      : nonNegativeMs(raw, 0, 'capture settle requires non-negative ms');
+    if (settleMs > 0) {
+      await sleep(settleMs);
+    }
+
+    return settleMs;
+  }
+
+  private async typeIntoFocusedElement(value: string): Promise<void> {
+    const driver = this.requireDriver() as any;
+    let element: any | null = null;
+    try {
+      element =
+        typeof driver.getActiveElement === 'function'
+          ? await driver.getActiveElement()
+          : typeof driver.activeElement === 'function'
+            ? await driver.activeElement()
+            : null;
+    } catch {
+      element = null;
+    }
+
+    if (element && typeof element.addValue === 'function') {
+      await element.addValue(value);
+      return;
+    }
+
+    const visibleInput = await this.visibleTextInputElement();
+    if (visibleInput && typeof visibleInput.addValue === 'function') {
+      try {
+        await visibleInput.addValue(value);
+        return;
+      } catch {
+        // Fall through to lower-level input if the visible field rejected addValue.
+      }
+    }
+
+    if (typeof driver.execute === 'function') {
+      try {
+        await driver.execute('mobile: type', { text: value });
+        return;
+      } catch {
+        // Fall through to generic key input if Appium does not expose mobile typing.
+      }
+    }
+
+    if (typeof driver.keys === 'function') {
+      await driver.keys(value);
+      return;
+    }
+
+    throw new Error('act type without target requires an active element or driver keys support');
+  }
+
+  private async visibleTextInputElement(): Promise<any | null> {
+    const selector = this.platform === 'ios'
+      ? "//*[(@type='XCUIElementTypeTextField' or @type='XCUIElementTypeSearchField' or @type='XCUIElementTypeSecureTextField') and @visible='true'][1]"
+      : "//*[contains(@class, 'EditText') and @displayed='true'][1]";
+
+    try {
+      const element = await this.requireDriver().$(selector);
+      return element ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private async pressHome(): Promise<void> {
@@ -804,6 +986,19 @@ function unitIntervalNumber(value: unknown, message: string): number {
     throw new Error(message);
   }
   return parsed;
+}
+
+function nonNegativeMs(value: unknown, defaultValue: number, message: string): number {
+  if (value === undefined || value === null) {
+    return defaultValue;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(message);
+  }
+
+  return Math.round(parsed);
 }
 
 function scalePoint(point: Point, width: number, height: number): Point {

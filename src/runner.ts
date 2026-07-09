@@ -106,6 +106,35 @@ function signatureSafeDetails(details: Record<string, unknown>): Record<string, 
   return safe;
 }
 
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function unmatchedWaitArgs(details: Record<string, unknown>): Record<string, unknown> | null {
+  const args = objectRecord(details.args);
+  if (!args || args.matched !== false) {
+    return null;
+  }
+
+  if (typeof args.for === 'string' || args.stable === true) {
+    return args;
+  }
+
+  return null;
+}
+
+function describeUnmatchedWait(args: Record<string, unknown>): string {
+  if (typeof args.for === 'string') {
+    return `wait predicate timed out for '${args.for}' (matched:false)`;
+  }
+  if (args.stable === true) {
+    return 'wait stable timed out (matched:false)';
+  }
+  return 'wait predicate timed out (matched:false)';
+}
+
 export async function runScenario(
   scenario: Scenario,
   adapter: PlatformAdapter,
@@ -159,6 +188,16 @@ export async function runScenario(
           duration_ms: durationMs,
           details
         };
+        const waitFailureArgs = step.command === 'wait' ? unmatchedWaitArgs(details) : null;
+        if (waitFailureArgs) {
+          result.status = 'fail';
+          result.error = makeError(
+            'ACTION_ERROR',
+            `Step '${step.id}' wait predicate timed out`,
+            describeUnmatchedWait(waitFailureArgs),
+            'Verify the wait selector or increase the wait timeout'
+          );
+        }
 
         if (step.command === 'screenshot' || step.command === 'source') {
           const args = details.args;
