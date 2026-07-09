@@ -662,17 +662,84 @@ describe('cli app map options', () => {
     );
   });
 
+  it('fails direct selector waits when the predicate times out', async () => {
+    daemonMock.runDaemonAction.mockResolvedValue({
+      action: 'wait',
+      args: {
+        for: 'text=Ready',
+        timeout_ms: 100,
+        matched: false,
+        elapsed_ms: 101
+      }
+    });
+
+    const result = await executeCommand([
+      'wait',
+      '--device',
+      'emulator-5554',
+      '--for',
+      'text=Ready',
+      '--timeout',
+      '100'
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.response.status).toBe('fail');
+    expect(result.response.error).toMatchObject({
+      code: 'ACTION_ERROR',
+      likely_cause: expect.stringContaining('matched:false')
+    });
+    expect(result.response.data).toMatchObject({
+      action: 'wait',
+      args: {
+        for: 'text=Ready',
+        matched: false
+      }
+    });
+  });
+
+  it('fails direct stable waits when the source never stabilizes', async () => {
+    daemonMock.runDaemonAction.mockResolvedValue({
+      action: 'wait',
+      args: {
+        stable: true,
+        timeout_ms: 100,
+        matched: false,
+        elapsed_ms: 101
+      }
+    });
+
+    const result = await executeCommand([
+      'wait',
+      '--device',
+      'emulator-5554',
+      '--stable',
+      '--timeout',
+      '100'
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.response.status).toBe('fail');
+    expect(result.response.data).toMatchObject({
+      action: 'wait',
+      args: {
+        stable: true,
+        matched: false
+      }
+    });
+  });
+
   it('fuses direct actions with a post-action wait predicate', async () => {
     daemonMock.runDaemonAction
       .mockResolvedValueOnce({
         action: 'tap',
-        args: { target: 'Deposit' },
+        args: { target: 'Continue' },
         observation: { screen_changed: true }
       })
       .mockResolvedValueOnce({
         action: 'wait',
         args: {
-          for: 'text=Slide to Confirm',
+          for: 'text=Ready',
           timeout_ms: 8000,
           matched: true
         }
@@ -683,9 +750,9 @@ describe('cli app map options', () => {
       '--device',
       'emulator-5554',
       '--target',
-      'Deposit',
+      'Continue',
       '--wait-for',
-      'text=Slide to Confirm',
+      'text=Ready',
       '--timeout',
       '8000'
     ]);
@@ -696,7 +763,7 @@ describe('cli app map options', () => {
       wait: {
         action: 'wait',
         args: {
-          for: 'text=Slide to Confirm',
+          for: 'text=Ready',
           matched: true
         }
       }
@@ -705,16 +772,60 @@ describe('cli app map options', () => {
       1,
       expect.any(Object),
       'tap',
-      { target: 'Deposit' },
+      { target: 'Continue' },
       expect.any(Object)
     );
     expect(daemonMock.runDaemonAction).toHaveBeenNthCalledWith(
       2,
       expect.any(Object),
       'wait',
-      { for: 'text=Slide to Confirm', timeout: 8000 },
+      { for: 'text=Ready', timeout: 8000 },
       expect.any(Object)
     );
+  });
+
+  it('fails fused direct actions when the post-action wait times out', async () => {
+    daemonMock.runDaemonAction
+      .mockResolvedValueOnce({
+        action: 'tap',
+        args: { target: 'Continue' },
+        observation: { screen_changed: true }
+      })
+      .mockResolvedValueOnce({
+        action: 'wait',
+        args: {
+          for: 'text=Ready',
+          timeout_ms: 100,
+          matched: false,
+          elapsed_ms: 101
+        }
+      });
+
+    const result = await executeCommand([
+      'tap',
+      '--device',
+      'emulator-5554',
+      '--target',
+      'Continue',
+      '--wait-for',
+      'text=Ready',
+      '--timeout',
+      '100'
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.response.status).toBe('fail');
+    expect(result.response.data).toMatchObject({
+      action: 'tap',
+      args: { target: 'Continue' },
+      wait: {
+        action: 'wait',
+        args: {
+          for: 'text=Ready',
+          matched: false
+        }
+      }
+    });
   });
 
   it('records successful direct actions into a named replay flow', async () => {
@@ -722,7 +833,7 @@ describe('cli app map options', () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-record-flow-'));
     daemonMock.runDaemonAction.mockResolvedValue({
       action: 'tap',
-      args: { target: 'Deposit', tap_method: 'coordinate', x: 224, y: 686 },
+      args: { target: 'Continue', tap_method: 'coordinate', x: 224, y: 686 },
       map: {
         enabled: true,
         used: false,
@@ -734,11 +845,11 @@ describe('cli app map options', () => {
 
     try {
       process.chdir(workspace);
-      const started = await executeCommand(['record', 'deposit']);
+      const started = await executeCommand(['record', 'checkout']);
       expect(started.code).toBe(0);
       expect(started.response.data).toMatchObject({
         action: 'record',
-        name: 'deposit',
+        name: 'checkout',
         active: true,
         steps: 0
       });
@@ -748,20 +859,20 @@ describe('cli app map options', () => {
         '--device',
         'emulator-5554',
         '--target',
-        'Deposit'
+        'Continue'
       ]);
       expect(tapped.code).toBe(0);
 
-      const stopped = await executeCommand(['record', 'deposit', '--stop']);
+      const stopped = await executeCommand(['record', 'checkout', '--stop']);
       expect(stopped.code).toBe(0);
       expect(stopped.response.data).toMatchObject({
         action: 'record',
-        name: 'deposit',
+        name: 'checkout',
         active: false,
         steps: 1
       });
 
-      const flowPath = path.join(workspace, '.visor', 'flows', 'deposit.json');
+      const flowPath = path.join(workspace, '.visor', 'flows', 'checkout.json');
       const flow = JSON.parse(fs.readFileSync(flowPath, 'utf8')) as {
         active: boolean;
         steps: Array<{ id: string; command: string; args: Record<string, unknown> }>;
@@ -779,6 +890,273 @@ describe('cli app map options', () => {
     }
   });
 
+  it('redacts typed values and result metadata from recorded flows by default', async () => {
+    const originalCwd = process.cwd();
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-record-private-'));
+    daemonMock.runDaemonAction.mockResolvedValue({
+      action: 'act',
+      args: { name: 'type', target: 'Search', value: 'secret-query' },
+      map: { enabled: true, used: true },
+      observation: { visible_text: ['private visible text'] },
+      screen: { id: 'screen_private' }
+    });
+
+    try {
+      process.chdir(workspace);
+      expect((await executeCommand(['record', 'checkout'])).code).toBe(0);
+      expect((await executeCommand([
+        'act',
+        '--device',
+        'emulator-5554',
+        '--name',
+        'type',
+        '--target',
+        'Search',
+        '--value',
+        'secret-query'
+      ])).code).toBe(0);
+      expect((await executeCommand(['record', 'checkout', '--stop'])).code).toBe(0);
+
+      const flowPath = path.join(workspace, '.visor', 'flows', 'checkout.json');
+      const flowText = fs.readFileSync(flowPath, 'utf8');
+      const flow = JSON.parse(flowText) as {
+        steps: Array<{ args: Record<string, unknown>; result?: Record<string, unknown> }>;
+      };
+
+      expect(flow.steps[0]?.args).toEqual({ name: 'type', target: 'Search' });
+      expect(flow.steps[0]).not.toHaveProperty('result');
+      expect(flowText).not.toContain('secret-query');
+      expect(flowText).not.toContain('private visible text');
+      expect(flowText).not.toContain('screen_private');
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('records screenshot and source settle intent without local artifact metadata', async () => {
+    const originalCwd = process.cwd();
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-record-captures-'));
+    const screenshotPath = path.join(workspace, 'private', 'hero.png');
+    const sourcePath = path.join(workspace, 'private', 'tree.xml');
+    daemonMock.runDaemonAction
+      .mockResolvedValueOnce({
+        action: 'screenshot',
+        args: {
+          label: 'hero',
+          file: 'hero.png',
+          path: screenshotPath,
+          width: 1170,
+          height: 2532
+        }
+      })
+      .mockResolvedValueOnce({
+        action: 'source',
+        args: {
+          label: 'tree',
+          file: 'tree.xml',
+          path: sourcePath,
+          format: 'xml',
+          bytes: 4096
+        }
+      });
+
+    try {
+      process.chdir(workspace);
+      expect((await executeCommand(['record', 'captures'])).code).toBe(0);
+      expect((await executeCommand([
+        'screenshot',
+        '--device',
+        'emulator-5554',
+        '--label',
+        'hero',
+        '--settle-ms',
+        '150'
+      ])).code).toBe(0);
+      expect((await executeCommand([
+        'source',
+        '--device',
+        'emulator-5554',
+        '--label',
+        'tree',
+        '--settle-ms',
+        '250'
+      ])).code).toBe(0);
+      expect((await executeCommand(['record', 'captures', '--stop'])).code).toBe(0);
+
+      const flowPath = path.join(workspace, '.visor', 'flows', 'captures.json');
+      const flowText = fs.readFileSync(flowPath, 'utf8');
+      const flow = JSON.parse(flowText) as {
+        steps: Array<{ command: string; args: Record<string, unknown> }>;
+      };
+
+      expect(flow.steps).toEqual([
+        { id: '001-screenshot', command: 'screenshot', args: { label: 'hero', settleMs: 150 } },
+        { id: '002-source', command: 'source', args: { label: 'tree', settleMs: 250 } }
+      ]);
+      expect(flowText).not.toContain(screenshotPath);
+      expect(flowText).not.toContain(sourcePath);
+      expect(flowText).not.toContain('1170');
+      expect(flowText).not.toContain('4096');
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('records wait predicate input without wait result fields', async () => {
+    const originalCwd = process.cwd();
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-record-wait-'));
+    daemonMock.runDaemonAction.mockResolvedValue({
+      action: 'wait',
+      args: {
+        for: 'text=Ready',
+        timeout_ms: 100,
+        poll_interval_ms: 25,
+        matched: true,
+        elapsed_ms: 17
+      }
+    });
+
+    try {
+      process.chdir(workspace);
+      expect((await executeCommand(['record', 'wait-ready'])).code).toBe(0);
+      expect((await executeCommand([
+        'wait',
+        '--device',
+        'emulator-5554',
+        '--for',
+        'text=Ready',
+        '--timeout',
+        '100',
+        '--poll-ms',
+        '25'
+      ])).code).toBe(0);
+      expect((await executeCommand(['record', 'wait-ready', '--stop'])).code).toBe(0);
+
+      const flowText = fs.readFileSync(path.join(workspace, '.visor', 'flows', 'wait-ready.json'), 'utf8');
+      const flow = JSON.parse(flowText) as {
+        steps: Array<{ id: string; command: string; args: Record<string, unknown> }>;
+      };
+
+      expect(flow.steps).toEqual([
+        {
+          id: '001-wait',
+          command: 'wait',
+          args: { for: 'text=Ready', timeout: 100, pollMs: 25 }
+        }
+      ]);
+      expect(flowText).not.toContain('matched');
+      expect(flowText).not.toContain('elapsed_ms');
+      expect(flowText).not.toContain('poll_interval_ms');
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('records reset actions without private app ids from adapter responses', async () => {
+    const originalCwd = process.cwd();
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-record-reset-'));
+    daemonMock.runDaemonAction.mockResolvedValue({
+      action: 'act',
+      args: { name: 'reset', app_id: 'com.private.app' }
+    });
+
+    try {
+      process.chdir(workspace);
+      expect((await executeCommand(['record', 'reset-app'])).code).toBe(0);
+      expect((await executeCommand([
+        'act',
+        '--device',
+        'emulator-5554',
+        '--app-id',
+        'com.private.app',
+        '--name',
+        'reset'
+      ])).code).toBe(0);
+      expect((await executeCommand(['record', 'reset-app', '--stop'])).code).toBe(0);
+
+      const flowText = fs.readFileSync(path.join(workspace, '.visor', 'flows', 'reset-app.json'), 'utf8');
+      const flow = JSON.parse(flowText) as {
+        steps: Array<{ id: string; command: string; args: Record<string, unknown> }>;
+      };
+
+      expect(flow.steps).toEqual([
+        { id: '001-act', command: 'act', args: { name: 'reset' } }
+      ]);
+      expect(flowText).not.toContain('com.private.app');
+      expect(flowText).not.toContain('app_id');
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves typed values only when recording is started with record-values', async () => {
+    const originalCwd = process.cwd();
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-record-values-'));
+    daemonMock.runDaemonAction.mockResolvedValue({
+      action: 'act',
+      args: { name: 'type', target: 'Search', value: 'public-query' }
+    });
+
+    try {
+      process.chdir(workspace);
+      expect((await executeCommand(['record', 'search', '--record-values'])).code).toBe(0);
+      expect((await executeCommand([
+        'act',
+        '--device',
+        'emulator-5554',
+        '--name',
+        'type',
+        '--target',
+        'Search',
+        '--value',
+        'public-query'
+      ])).code).toBe(0);
+      expect((await executeCommand(['record', 'search', '--stop'])).code).toBe(0);
+
+      const flow = JSON.parse(fs.readFileSync(path.join(workspace, '.visor', 'flows', 'search.json'), 'utf8')) as {
+        record_values?: boolean;
+        steps: Array<{ args: Record<string, unknown> }>;
+      };
+
+      expect(flow.record_values).toBe(true);
+      expect(flow.steps[0]?.args).toEqual({ name: 'type', target: 'Search', value: 'public-query' });
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to overwrite an existing recorded flow unless force is passed', async () => {
+    const originalCwd = process.cwd();
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-record-force-'));
+
+    try {
+      process.chdir(workspace);
+      expect((await executeCommand(['record', 'checkout'])).code).toBe(0);
+      expect((await executeCommand(['record', 'checkout', '--stop'])).code).toBe(0);
+
+      const refused = await executeCommand(['record', 'checkout']);
+      expect(refused.code).toBe(1);
+      expect(refused.response.error?.likely_cause).toContain('already exists');
+
+      const forced = await executeCommand(['record', 'checkout', '--force']);
+      expect(forced.code).toBe(0);
+      expect(forced.response.data).toMatchObject({
+        action: 'record',
+        name: 'checkout',
+        active: true,
+        steps: 0
+      });
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('replays a recorded flow with parameter substitution through the scenario runner', async () => {
     const originalCwd = process.cwd();
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-replay-flow-'));
@@ -789,10 +1167,10 @@ describe('cli app map options', () => {
       process.chdir(workspace);
       fs.mkdirSync(path.join(workspace, '.visor', 'flows'), { recursive: true });
       fs.writeFileSync(
-        path.join(workspace, '.visor', 'flows', 'deposit.json'),
+        path.join(workspace, '.visor', 'flows', 'checkout.json'),
         `${JSON.stringify({
           schema_version: 1,
-          name: 'deposit',
+          name: 'checkout',
           active: false,
           created_at: new Date(0).toISOString(),
           updated_at: new Date(0).toISOString(),
@@ -800,12 +1178,12 @@ describe('cli app map options', () => {
             {
               id: '001-tap',
               command: 'tap',
-              args: { target: 'Deposit' }
+              args: { target: 'Continue' }
             },
             {
               id: '002-type',
               command: 'act',
-              args: { name: 'type', target: 'Amount', value: '{{amount}}' }
+              args: { name: 'type', target: 'Quantity', value: '{{quantity}}' }
             }
           ]
         }, null, 2)}\n`,
@@ -814,13 +1192,13 @@ describe('cli app map options', () => {
 
       const result = await executeCommand([
         'replay',
-        'deposit',
+        'checkout',
         '--device',
         'emulator-5554',
         '--app-id',
-        'com.example.bank',
+        'com.example.app',
         '--param',
-        'amount=100',
+        'quantity=2',
         '--output',
         outputDir
       ]);
@@ -828,7 +1206,7 @@ describe('cli app map options', () => {
       expect(result.code).toBe(0);
       expect(result.response.data).toMatchObject({
         action: 'replay',
-        name: 'deposit',
+        name: 'checkout',
         steps: 2,
         run: {
           run_id: 'replay_1'
@@ -837,16 +1215,78 @@ describe('cli app map options', () => {
       expect(daemonMock.runDaemonScenario).toHaveBeenCalledWith(
         expect.any(Object),
         expect.objectContaining({
-          meta: expect.objectContaining({ name: 'replay:deposit' }),
+          meta: expect.objectContaining({ name: 'replay:checkout' }),
           steps: [
-            { id: '001-tap', command: 'tap', args: { target: 'Deposit' } },
-            { id: '002-type', command: 'act', args: { name: 'type', target: 'Amount', value: '100' } }
+            { id: '001-tap', command: 'tap', args: { target: 'Continue' } },
+            { id: '002-type', command: 'act', args: { name: 'type', target: 'Quantity', value: '2' } }
           ]
         }),
         'emulator-5554',
         expect.any(Number),
         outputDir,
-        expect.objectContaining({ enabled: true, appId: 'com.example.bank' })
+        expect.objectContaining({ enabled: true, appId: 'com.example.app' })
+      );
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('does not echo replay parameter values in response data or text', async () => {
+    const originalCwd = process.cwd();
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-replay-params-'));
+    daemonMock.runDaemonScenario.mockResolvedValue(benchmarkRun('replay_2'));
+
+    try {
+      process.chdir(workspace);
+      fs.mkdirSync(path.join(workspace, '.visor', 'flows'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspace, '.visor', 'flows', 'login.json'),
+        `${JSON.stringify({
+          schema_version: 1,
+          name: 'login',
+          active: false,
+          created_at: new Date(0).toISOString(),
+          updated_at: new Date(0).toISOString(),
+          steps: [
+            {
+              id: '001-type',
+              command: 'act',
+              args: { name: 'type', target: 'Token', value: '{{token}}' }
+            }
+          ]
+        }, null, 2)}\n`,
+        'utf8'
+      );
+
+      const result = await executeCommand([
+        'replay',
+        'login',
+        '--device',
+        'emulator-5554',
+        '--param',
+        'token=secret'
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.response.data).toMatchObject({
+        action: 'replay',
+        name: 'login',
+        param_keys: ['token']
+      });
+      expect(JSON.stringify(result.response.data)).not.toContain('secret');
+      expect(JSON.stringify(result.response)).not.toContain('secret');
+      expect(daemonMock.runDaemonScenario).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          steps: [
+            { id: '001-type', command: 'act', args: { name: 'type', target: 'Token', value: 'secret' } }
+          ]
+        }),
+        'emulator-5554',
+        expect.any(Number),
+        'artifacts',
+        expect.objectContaining({ enabled: true })
       );
     } finally {
       process.chdir(originalCwd);

@@ -85,6 +85,7 @@ interface RecordedFlow {
   schema_version: 1;
   name: string;
   active: boolean;
+  record_values?: boolean;
   created_at: string;
   updated_at: string;
   steps: RecordedFlowStep[];
@@ -99,6 +100,46 @@ function packageVersion(): string {
   } catch {
     return 'unknown';
   }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function unmatchedWaitArgs(payload: Record<string, unknown>): Record<string, unknown> | null {
+  const args = objectRecord(payload.args);
+  if (!args || args.matched !== false) {
+    return null;
+  }
+
+  if (typeof args.for === 'string' || args.stable === true) {
+    return args;
+  }
+
+  return null;
+}
+
+function describeUnmatchedWait(args: Record<string, unknown>): string {
+  if (typeof args.for === 'string') {
+    return `wait predicate timed out for '${args.for}' (matched:false)`;
+  }
+  if (args.stable === true) {
+    return 'wait stable timed out (matched:false)';
+  }
+  return 'wait predicate timed out (matched:false)';
+}
+
+function assertMatchedWaitPayload(payload: Record<string, unknown>, label = 'wait'): void {
+  const args = unmatchedWaitArgs(payload);
+  if (!args) {
+    return;
+  }
+
+  throw new Error(label === 'post-action wait'
+    ? `post-action ${describeUnmatchedWait(args)}`
+    : describeUnmatchedWait(args));
 }
 
 function flowDir(): string {
@@ -121,6 +162,7 @@ function flowResponse(flow: RecordedFlow, action = 'record'): JsonRecord {
     action,
     name: flow.name,
     active: flow.active,
+    record_values: flow.record_values === true,
     steps: flow.steps.length,
     path: flowPath(flow.name)
   };
@@ -158,22 +200,41 @@ function activeFlows(): RecordedFlow[] {
     });
 }
 
-function recordableResult(payload: Record<string, unknown>): Record<string, unknown> | undefined {
-  const result: Record<string, unknown> = {};
-  for (const key of ['map', 'observation', 'screen']) {
-    if (payload[key] !== undefined) {
-      result[key] = payload[key];
-    }
-  }
-  return Object.keys(result).length > 0 ? result : undefined;
-}
-
 function replayableRecordedArgs(
   command: CommandName,
   fallbackArgs: Record<string, unknown>,
-  payloadArgs: Record<string, unknown> | null
+  payloadArgs: Record<string, unknown> | null,
+  recordValues: boolean
 ): Record<string, unknown> {
-  const candidate = payloadArgs ?? fallbackArgs;
+  if (command === 'screenshot' || command === 'source') {
+    const label = fallbackArgs.label ?? payloadArgs?.label;
+    const recorded: Record<string, unknown> =
+      typeof label === 'string' && label.length > 0 ? { label } : {};
+    if (typeof fallbackArgs.settleMs === 'number') {
+      recorded.settleMs = fallbackArgs.settleMs;
+    } else if (fallbackArgs.settle === true) {
+      recorded.settle = true;
+    }
+    return recorded;
+  }
+
+  if (command === 'wait') {
+    const recorded: Record<string, unknown> = {};
+    for (const key of ['ms', 'for', 'stable', 'timeout', 'pollMs']) {
+      if (fallbackArgs[key] !== undefined) {
+        recorded[key] = fallbackArgs[key];
+      }
+    }
+    return recorded;
+  }
+
+  const candidate =
+    command === 'tap' &&
+    payloadArgs &&
+    typeof payloadArgs.x === 'number' &&
+    typeof payloadArgs.y === 'number'
+      ? payloadArgs
+      : fallbackArgs;
   if (command === 'tap' && typeof candidate.x === 'number' && typeof candidate.y === 'number') {
     return {
       x: candidate.x,
@@ -184,6 +245,9 @@ function replayableRecordedArgs(
 
   const cloned = structuredClone(candidate);
   delete cloned.tap_method;
+  if (command === 'act' && String(cloned.name ?? '') === 'type' && !recordValues) {
+    delete cloned.value;
+  }
   return cloned;
 }
 
@@ -193,15 +257,15 @@ function appendActiveRecordings(command: CommandName, args: Record<string, unkno
   for (const flow of flows) {
     const stepNumber = flow.steps.length + 1;
     const payloadArgs = payload.args;
+    const recordValues = flow.record_values === true;
     const recordedArgs =
       payloadArgs && typeof payloadArgs === 'object' && !Array.isArray(payloadArgs)
-        ? replayableRecordedArgs(command, args, payloadArgs as Record<string, unknown>)
-        : replayableRecordedArgs(command, args, null);
+        ? replayableRecordedArgs(command, args, payloadArgs as Record<string, unknown>, recordValues)
+        : replayableRecordedArgs(command, args, null, recordValues);
     flow.steps.push({
       id: `${String(stepNumber).padStart(3, '0')}-${command}`,
       command,
-      args: recordedArgs,
-      ...(recordableResult(payload) ? { result: recordableResult(payload) } : {})
+      args: recordedArgs
     });
     flow.updated_at = utcNowIso();
     writeFlow(flow);
@@ -377,7 +441,9 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
   report: { format: 'string' },
   record: {
     format: 'string',
-    stop: 'boolean'
+    stop: 'boolean',
+    'record-values': 'boolean',
+    force: 'boolean'
   },
   replay: {
     device: 'string',
@@ -439,7 +505,7 @@ function helpText(): string {
     '  benchmark <scenario> [--runs <n>] [--threshold <percent>]',
     '  discover [--app-id <id>]',
     '  report [path]',
-    '  record <name> [--stop]',
+    '  record <name> [--stop|--force|--record-values]',
     '  replay <name> [--param key=value]',
     '  start [--server-url <url>] [--appium-cmd <cmd>]',
     '  status [--server-url <url>]',
@@ -453,14 +519,20 @@ function helpText(): string {
     '  visor run scenarios/checkout-smoke.json --output artifacts-test',
     '  visor run scenarios/checkout-smoke.json --no-map',
     '  visor discover --app-id com.example.app',
-    '  visor record deposit',
-    '  visor replay deposit --param amount=100',
+    '  visor record checkout',
+    '  visor replay checkout --param item=shoes',
     '  visor scroll --device emulator-5554 --direction down',
     '  visor status'
   ].join('\n');
 }
 
 function commandHelpText(command: string): { usageText: string; examples: string[] } {
+  const postActionWaitOptions = [
+    '  --wait-for <selector>     Wait for a selector after the action',
+    '  --timeout <ms>            Timeout for runtime action or --wait-for',
+    '  --poll-ms <ms>            Poll interval for --wait-for'
+  ];
+
   if (command === 'tap') {
     const examples = [
       'visor tap --target accessibility=Continue',
@@ -483,8 +555,7 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --x <points>              X coordinate in screen points, or fraction with --normalized',
         '  --y <points>              Y coordinate in screen points, or fraction with --normalized',
         '  --normalized              Treat x/y as fractions of current screen size',
-        '  --wait-for <selector>     Wait for a selector after the tap',
-        '  --timeout <ms>            Timeout for runtime action or --wait-for',
+        ...postActionWaitOptions,
         '  --no-map                  Disable app-map reads and writes',
         '  --repair                  Allow opt-in exploratory app-map repair'
       ].join('\n'),
@@ -539,7 +610,62 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --end-x <points>         Drag end x coordinate',
         '  --end-y <points>         Drag end y coordinate',
         '  --start-value <0..1>     Slider starting value, default 0.5',
-        '  --normalized             Treat drag coordinates as viewport fractions'
+        '  --normalized             Treat drag coordinates as viewport fractions',
+        ...postActionWaitOptions
+      ].join('\n'),
+      examples
+    };
+  }
+
+  if (command === 'scroll') {
+    const examples = [
+      'visor scroll --direction down',
+      'visor scroll --direction up --percent 50',
+      'visor scroll --direction down --wait-for text=Loaded --timeout 8000 --poll-ms 250'
+    ];
+    return {
+      usageText: [
+        'Visor scroll',
+        '',
+        'Usage:',
+        '  visor scroll --direction <up|down> [options]',
+        '',
+        'Options:',
+        '  --direction <up|down>    Scroll direction',
+        '  --percent <1..100>       Scroll distance percentage, default 70',
+        ...postActionWaitOptions,
+        '  --no-map                 Disable app-map reads and writes',
+        '  --repair                 Allow opt-in exploratory app-map repair'
+      ].join('\n'),
+      examples
+    };
+  }
+
+  if (command === 'screenshot' || command === 'source') {
+    const isScreenshot = command === 'screenshot';
+    const title = isScreenshot ? 'Visor screenshot' : 'Visor source';
+    const extension = isScreenshot ? 'png' : 'xml';
+    const noun = isScreenshot ? 'PNG screenshot' : 'UI source XML';
+    const defaultLabel = isScreenshot ? 'capture' : 'source';
+    const examples = [
+      `visor ${command} --label checkout`,
+      `visor ${command} --path /tmp/checkout.${extension}`,
+      `visor ${command} --label checkout --output artifacts`,
+      `visor ${command} --settle-ms 500`
+    ];
+    return {
+      usageText: [
+        title,
+        '',
+        'Usage:',
+        `  visor ${command} [--label <name>|--path <file>] [capture options]`,
+        '',
+        'Options:',
+        `  --label <name>           Label for the ${noun}; default ${defaultLabel}`,
+        `  --path <file>            Write the ${noun} to an exact file path`,
+        `  --output <dir>           Write to <dir>/<label>.${extension} when --path is omitted`,
+        '  --settle                 Wait briefly before capture',
+        '  --settle-ms <ms>         Milliseconds to wait before capture'
       ].join('\n'),
       examples
     };
@@ -548,7 +674,7 @@ function commandHelpText(command: string): { usageText: string; examples: string
   if (command === 'wait') {
     const examples = [
       'visor wait --ms 500',
-      'visor wait --for "text=Slide to Confirm" --timeout 8000',
+      'visor wait --for "text=Ready" --timeout 8000',
       'visor wait --stable --timeout 2000'
     ];
     return {
@@ -594,20 +720,22 @@ function commandHelpText(command: string): { usageText: string; examples: string
 
   if (command === 'record') {
     const examples = [
-      'visor record deposit',
-      'visor tap --target Deposit',
-      'visor record deposit --stop'
+      'visor record checkout',
+      'visor tap --target Continue',
+      'visor record checkout --stop'
     ];
     return {
       usageText: [
         'Visor record',
         '',
         'Usage:',
-        '  visor record <name>',
+        '  visor record <name> [--force] [--record-values]',
         '  visor record <name> --stop',
         '',
         'Options:',
-        '  --stop                    Stop recording and keep the replay file'
+        '  --stop                    Stop recording and keep the replay file',
+        '  --force                   Overwrite an existing flow with the same name',
+        '  --record-values           Persist typed text values for replay'
       ].join('\n'),
       examples
     };
@@ -615,8 +743,8 @@ function commandHelpText(command: string): { usageText: string; examples: string
 
   if (command === 'replay') {
     const examples = [
-      'visor replay deposit',
-      'visor replay deposit --param amount=100'
+      'visor replay checkout',
+      'visor replay search --param query=shoes'
     ];
     return {
       usageText: [
@@ -1477,10 +1605,15 @@ export async function cmdRecord(parsed: ParsedCommand): Promise<CommandResult> {
     }
 
     const now = utcNowIso();
+    const existing = readFlow(name);
+    if (existing && parsed.options.force !== true) {
+      throw new Error(`Recorded flow '${name}' already exists; use --force to overwrite it`);
+    }
     const flow: RecordedFlow = {
       schema_version: 1,
       name,
       active: true,
+      ...(parsed.options['record-values'] === true ? { record_values: true } : {}),
       created_at: now,
       updated_at: now,
       steps: []
@@ -1556,7 +1689,7 @@ export async function cmdReplay(parsed: ParsedCommand): Promise<CommandResult> {
       name,
       steps: flow.steps.length,
       run: result,
-      params
+      param_keys: Object.keys(params)
     };
     return { code: result.status === 'ok' ? 0 : 2, response };
   } catch (error) {
@@ -1652,9 +1785,13 @@ export async function cmdAction(command: CommandName, parsed: ParsedCommand): Pr
       primaryArgs,
       mapOptions
     );
+    if (command === 'wait') {
+      assertMatchedWaitPayload(payload);
+    }
     const waitArgs = postActionWaitArgs(command, parsed.options);
     if (waitArgs) {
       payload.wait = await runDaemonAction(runtimeInput, 'wait', waitArgs, mapOptions);
+      assertMatchedWaitPayload(payload.wait as Record<string, unknown>, 'post-action wait');
     }
     const actionPayload = payload.args;
     if (actionPayload && typeof actionPayload === 'object' && !Array.isArray(actionPayload)) {

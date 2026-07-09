@@ -283,18 +283,23 @@ async function requestDaemonStatus(timeoutMs = 1000): Promise<Record<string, unk
 
 function withDaemonVersionStatus(daemonData: Record<string, unknown>): Record<string, unknown> {
   const currentPackageVersion = packageVersion();
-  const daemonPackageVersion = typeof daemonData.packageVersion === 'string'
-    ? daemonData.packageVersion
-    : undefined;
-  const stale = Boolean(daemonPackageVersion && daemonPackageVersion !== currentPackageVersion);
+  const hasDaemonPackageVersion =
+    typeof daemonData.packageVersion === 'string' && daemonData.packageVersion.trim() !== '';
+  const daemonPackageVersion = hasDaemonPackageVersion
+    ? String(daemonData.packageVersion)
+    : 'unknown';
+  const stale = !hasDaemonPackageVersion || daemonPackageVersion !== currentPackageVersion;
 
   return {
     ...daemonData,
+    packageVersion: daemonPackageVersion,
     currentPackageVersion,
     stale,
     ...(stale
       ? {
-          warning: `Visor daemon package version ${daemonPackageVersion} differs from current CLI version ${currentPackageVersion}. Run \`visor stop\` and then \`visor start\` to refresh the daemon.`,
+          warning: hasDaemonPackageVersion
+            ? `Visor daemon package version ${daemonPackageVersion} differs from current CLI version ${currentPackageVersion}. Run \`visor stop\` and then \`visor start\` to refresh the daemon.`
+            : `Visor daemon does not report a package version. Current CLI version is ${currentPackageVersion}. Run \`visor stop\` and then \`visor start\` to refresh the daemon.`,
           nextAction: 'restart'
         }
       : {})

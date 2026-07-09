@@ -750,12 +750,17 @@ export class RealAppiumAdapter implements PlatformAdapter {
 
   private async typeIntoFocusedElement(value: string): Promise<void> {
     const driver = this.requireDriver() as any;
-    const element =
-      typeof driver.getActiveElement === 'function'
-        ? await driver.getActiveElement()
-        : typeof driver.activeElement === 'function'
-          ? await driver.activeElement()
-          : null;
+    let element: any | null = null;
+    try {
+      element =
+        typeof driver.getActiveElement === 'function'
+          ? await driver.getActiveElement()
+          : typeof driver.activeElement === 'function'
+            ? await driver.activeElement()
+            : null;
+    } catch {
+      element = null;
+    }
 
     if (element && typeof element.addValue === 'function') {
       await element.addValue(value);

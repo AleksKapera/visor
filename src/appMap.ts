@@ -319,6 +319,9 @@ const RISKY_WORDS = [
   'submit',
   'send',
   'pay',
+  'deposit',
+  'sell',
+  'withdraw',
   'purchase',
   'buy',
   'confirm',
@@ -1652,18 +1655,18 @@ function actionObservationPayload(before: ObservedVariant, after: ObservedVarian
       variant_id: after.variant.id,
       screen_id: after.variant.screen_id
     },
-    visible_text: visibleTextSummary(after.variant)
+    visible_text_count: visibleTextCount(after.variant)
   };
 }
 
-function visibleTextSummary(variant: AppMapVariant): string[] {
+function visibleTextCount(variant: AppMapVariant): number {
   return unique(
     variant.elements
       .filter((element) => element.visible !== false)
       .flatMap((element) => element.labels)
       .flatMap((label) => label.split(/\n+/).map((line) => line.trim()).filter(Boolean))
       .filter((label) => !isGlobalIdentityLabel(label))
-  ).slice(0, 12);
+  ).length;
 }
 
 function variantSatisfiesContract(variant: AppMapVariant, contract: DestinationContract): boolean {

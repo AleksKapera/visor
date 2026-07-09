@@ -461,6 +461,30 @@ describe('adapter selector helpers', () => {
     await adapter.close();
   });
 
+  it('types into the first visible text input when active element lookup rejects', async () => {
+    const driver = createFakeDriver();
+    const input = {
+      addValue: vi.fn()
+    };
+    (driver as any).getActiveElement = vi.fn().mockRejectedValue(new Error('active lookup failed'));
+    driver.$.mockResolvedValue(input);
+    webdriverMock.remote.mockResolvedValue(driver);
+    const adapter = await RealAppiumAdapter.create(
+      'ios',
+      'http://127.0.0.1:4723',
+      'simulator-udid',
+      'com.example.app'
+    );
+
+    const result = await adapter.act({ name: 'type', value: 'aapl' });
+
+    expect((driver as any).getActiveElement).toHaveBeenCalled();
+    expect(input.addValue).toHaveBeenCalledWith('aapl');
+    expect(driver.execute).not.toHaveBeenCalledWith('mobile: type', expect.any(Object));
+    expect(result.args).toEqual({ name: 'type', value: 'aapl' });
+    await adapter.close();
+  });
+
   it('falls back to driver keys when mobile type is unavailable', async () => {
     const driver = createFakeDriver();
     driver.$.mockResolvedValue(null);

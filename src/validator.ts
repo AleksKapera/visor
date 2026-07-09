@@ -149,6 +149,59 @@ function validateScrollArgs(args: Record<string, unknown>, issuePath: string): V
   return issues;
 }
 
+function validateWaitArgs(args: Record<string, unknown>, issuePath: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const hasMs = Object.hasOwn(args, 'ms');
+  const hasFor = Object.hasOwn(args, 'for');
+  const hasStable = Object.hasOwn(args, 'stable');
+  const waitModeCount = [hasMs, hasFor, hasStable].filter(Boolean).length;
+
+  if (waitModeCount !== 1) {
+    issues.push(
+      validationIssue(
+        'error',
+        'ARG_ERROR',
+        'wait requires exactly one of args.ms, args.for, or args.stable',
+        issuePath
+      )
+    );
+  }
+
+  if (hasMs && (typeof args.ms !== 'number' || !Number.isFinite(args.ms) || args.ms < 0)) {
+    issues.push(
+      validationIssue('error', 'ARG_ERROR', 'wait args.ms must be a non-negative number', issuePath)
+    );
+  }
+
+  if (hasFor && (typeof args.for !== 'string' || args.for.trim() === '')) {
+    issues.push(
+      validationIssue('error', 'ARG_ERROR', 'wait args.for must be a non-empty string', issuePath)
+    );
+  }
+
+  if (hasStable && args.stable !== true) {
+    issues.push(validationIssue('error', 'ARG_ERROR', 'wait args.stable must be true', issuePath));
+  }
+
+  for (const key of ['timeout', 'pollMs', 'poll-ms']) {
+    if (
+      Object.hasOwn(args, key) &&
+      (typeof args[key] !== 'number' || !Number.isFinite(args[key]) || args[key] < 0)
+    ) {
+      issues.push(
+        validationIssue(
+          'error',
+          'ARG_ERROR',
+          `wait args.${key} must be a non-negative number`,
+          issuePath
+        )
+      );
+    }
+  }
+
+  return issues;
+}
+
 export function parseAndValidate(filePath: string): ParseValidationResult {
   const issues: ValidationIssue[] = [];
   const raw = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
@@ -256,8 +309,8 @@ export function parseAndValidate(filePath: string): ParseValidationResult {
         );
       }
 
-      if (command === 'wait' && isRecord(args) && !Object.hasOwn(args, 'ms')) {
-        issues.push(validationIssue('error', 'ARG_ERROR', 'wait requires args.ms', `${issuePath}.args`));
+      if (command === 'wait' && isRecord(args)) {
+        issues.push(...validateWaitArgs(args, `${issuePath}.args`));
       }
 
       if (

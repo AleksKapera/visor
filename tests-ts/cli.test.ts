@@ -112,6 +112,67 @@ describe('typescript cli', () => {
     expect(data.examples).toContain('visor tap --target "first-in-section=Featured products"');
   });
 
+  it('returns command-specific help for capture commands', async () => {
+    const expectations = [
+      {
+        command: 'screenshot',
+        usage: 'visor screenshot [--label <name>|--path <file>]',
+        examples: ['visor screenshot --label checkout', 'visor screenshot --path /tmp/checkout.png']
+      },
+      {
+        command: 'source',
+        usage: 'visor source [--label <name>|--path <file>]',
+        examples: ['visor source --label checkout', 'visor source --path /tmp/checkout.xml']
+      }
+    ];
+
+    for (const expectation of expectations) {
+      const result = await executeCommand([expectation.command, '--help']);
+      const data = responseData<{ usageText: string; examples: string[] }>(result.response.data);
+
+      expect(result.code).toBe(0);
+      expect(data.usageText).toContain(expectation.usage);
+      expect(data.usageText).toContain('--label <name>');
+      expect(data.usageText).toContain('--path <file>');
+      expect(data.usageText).toContain('--output <dir>');
+      expect(data.usageText).toContain('--settle');
+      expect(data.usageText).toContain('--settle-ms <ms>');
+      expect(data.usageText).not.toContain('Run visor --help for the full command list.');
+      for (const example of expectation.examples) {
+        expect(data.examples).toContain(example);
+      }
+    }
+  });
+
+  it('documents post-action wait options for direct action help', async () => {
+    for (const command of ['tap', 'act', 'scroll']) {
+      const result = await executeCommand([command, '--help']);
+      const data = responseData<{ usageText: string }>(result.response.data);
+
+      expect(result.code).toBe(0);
+      expect(data.usageText).toContain('--wait-for <selector>');
+      expect(data.usageText).toContain('--timeout <ms>');
+      expect(data.usageText).toContain('--poll-ms <ms>');
+    }
+  });
+
+  it('keeps record and replay help generic and documents recording controls', async () => {
+    const topLevel = await executeCommand(['--help']);
+    const topLevelData = responseData<{ usageText: string; examples: string[] }>(
+      topLevel.response.data
+    );
+    const record = await executeCommand(['record', '--help']);
+    const recordData = responseData<{ usageText: string; examples: string[] }>(record.response.data);
+    const replay = await executeCommand(['replay', '--help']);
+    const replayData = responseData<{ usageText: string; examples: string[] }>(replay.response.data);
+
+    expect(topLevelData.examples.join('\n')).not.toMatch(/\bdeposit\b/i);
+    expect(recordData.examples.join('\n')).not.toMatch(/\bdeposit\b/i);
+    expect(replayData.examples.join('\n')).not.toMatch(/\bdeposit\b/i);
+    expect(recordData.usageText).toContain('--record-values');
+    expect(recordData.usageText).toContain('--force');
+  });
+
   it('validates a good scenario', async () => {
     const result = await executeCommand(['validate', 'scenarios/checkout-smoke.json']);
     expect(result.code).toBe(0);
@@ -243,6 +304,60 @@ describe('typescript cli', () => {
       expect(result.code).toBe(0);
       expect(result.response.status).toBe('ok');
       expect(result.response.data.run.status).toBe('ok');
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs selector wait scenario steps with the deterministic local runtime', async () => {
+    const outputDir = tempOutputDir();
+    const scenarioPath = path.join(outputDir, 'wait-for-ready.json');
+    fs.writeFileSync(
+      scenarioPath,
+      JSON.stringify(
+        {
+          meta: { name: 'local wait for ready', version: '1' },
+          config: { seed: 1 },
+          steps: [
+            { id: 'ready', command: 'wait', args: { for: 'text=Ready', timeout: 100 } }
+          ],
+          assertions: [],
+          output: {}
+        },
+        null,
+        2
+      )
+    );
+
+    try {
+      const result = await executeCommand([
+        'run',
+        scenarioPath,
+        '--runtime',
+        'local',
+        '--output',
+        outputDir
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.response.status).toBe('ok');
+      expect(result.response.data.run.status).toBe('ok');
+      expect(result.response.data.run.steps).toEqual([
+        expect.objectContaining({
+          id: 'ready',
+          command: 'wait',
+          status: 'ok',
+          details: expect.objectContaining({
+            action: 'wait',
+            platform: 'android',
+            args: expect.objectContaining({
+              for: 'text=Ready',
+              timeout_ms: 100,
+              matched: true
+            })
+          })
+        })
+      ]);
     } finally {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }

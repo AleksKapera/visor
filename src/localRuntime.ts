@@ -18,6 +18,17 @@ function targetValue(target: string): string {
   return separatorIndex === -1 ? target : target.slice(separatorIndex + 1);
 }
 
+function nonNegativeMs(value: unknown, fallback: number, label: string): number {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms < 0) {
+    throw new Error(`${label} must be a non-negative number`);
+  }
+  return ms;
+}
+
 export class LocalRuntimeAdapter implements PlatformAdapter {
   private counter = 0;
   private route = 'app://home';
@@ -99,10 +110,59 @@ export class LocalRuntimeAdapter implements PlatformAdapter {
   }
 
   async wait(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (args.stable === true) {
+      const timeoutMs = nonNegativeMs(
+        args.timeout ?? args.timeoutMs ?? args['timeout-ms'] ?? args.ms,
+        5000,
+        'wait stable timeout'
+      );
+      const pollIntervalMs = nonNegativeMs(
+        args.interval ?? args.pollMs ?? args['poll-ms'],
+        250,
+        'wait stable poll interval'
+      );
+      return {
+        action: 'wait',
+        platform: 'android',
+        args: {
+          stable: true,
+          timeout_ms: timeoutMs,
+          poll_interval_ms: pollIntervalMs,
+          matched: true,
+          elapsed_ms: 0
+        }
+      };
+    }
+
+    if (typeof args.for === 'string' && args.for) {
+      const timeoutMs = nonNegativeMs(
+        args.timeout ?? args.timeoutMs ?? args['timeout-ms'] ?? args.ms,
+        5000,
+        'wait for timeout'
+      );
+      const pollIntervalMs = nonNegativeMs(
+        args.interval ?? args.pollMs ?? args['poll-ms'],
+        250,
+        'wait for poll interval'
+      );
+      return {
+        action: 'wait',
+        platform: 'android',
+        args: {
+          for: args.for,
+          timeout_ms: timeoutMs,
+          poll_interval_ms: pollIntervalMs,
+          matched: await this.exists(args.for),
+          elapsed_ms: 0
+        }
+      };
+    }
+
+    const ms = nonNegativeMs(args.ms, 0, 'wait ms');
     return {
       action: 'wait',
       platform: 'android',
-      args: { ms: Number(args.ms ?? 0) }
+      args: { ms }
     };
   }
 
@@ -141,6 +201,7 @@ export class LocalRuntimeAdapter implements PlatformAdapter {
       `  <node text="Route: ${this.route}" />`,
       `  <node text="${this.counter}" label="${this.counter}" name="${this.counter}" value="${this.counter}" />`,
       '  <node text="Increment" content-desc="Increment" label="Increment" name="Increment" />',
+      '  <node text="Ready" content-desc="Ready" label="Ready" name="Ready" />',
       '</hierarchy>',
       ''
     ].join('\n');

@@ -38,7 +38,7 @@ Use `--no-map` or `VISOR_NO_MAP=true` when you need raw Appium behavior. No-map 
 
 Exploratory repair is off by default. Use `--repair` when you want Visor to try safe controls after a missing or stale route instead of failing fast.
 
-Every mapped direct action returns `data.map`. Mapped target, coordinate, and scroll actions also return `data.observation` with before/after fingerprints, `screen_changed`, previous/current screen ids, and visible text. Scenario runs return `data.run.map` and per-step map details under `data.run.steps[].details.map` when a step used routing, repair, or map observation.
+Every mapped direct action returns `data.map`. Mapped target, coordinate, and scroll actions also return `data.observation` with before/after fingerprints, `screen_changed`, previous/current screen ids, and `visible_text_count`. Scenario runs return `data.run.map` and per-step map details under `data.run.steps[].details.map` when a step used routing, repair, or map observation.
 
 ## Direct action commands
 
@@ -51,7 +51,7 @@ Inputs:
 - target mode: `target`
 - coordinate mode: `x`, `y`
 - optional: `normalized`
-- optional: `wait-for`, `timeout`, and `poll-ms` to wait for a selector after the tap
+- optional post-action wait: `--wait-for`, `--timeout`, and `--poll-ms` to wait for a selector after the tap
 
 Returns action payload fields:
 
@@ -112,6 +112,14 @@ Supported variants:
 
 `drag` also accepts `normalized` so coordinates can be fractions of the viewport. `reset` requires `app-id` because Visor restarts the target app.
 
+Optional post-action wait inputs:
+
+- `--wait-for`
+- `--timeout`
+- `--poll-ms`
+
+`--wait-for` polls for a selector after the helper action completes. `--timeout` and `--poll-ms` control that post-action wait.
+
 Returns action payload fields:
 
 - `action`
@@ -129,6 +137,9 @@ Required input:
 Optional input:
 
 - `percent`, default `70`
+- post-action wait: `--wait-for`, `--timeout`, and `--poll-ms`
+
+`--wait-for` polls for a selector after the scroll completes. `--timeout` and `--poll-ms` control that post-action wait.
 
 Returns action payload fields:
 
@@ -188,7 +199,7 @@ Returns action payload fields:
 - `platform`
 - `args.ms`, or selector/stability wait result fields
 
-`wait --for <selector>` polls until the selector exists or the timeout expires. `wait --stable` polls UI source until two consecutive captures match or the timeout expires.
+`wait --for <selector>` polls until the selector exists. `wait --stable` polls UI source until two consecutive captures match. If either predicate times out, the command or scenario step fails and preserves the wait payload with `matched: false`.
 
 ### `source`
 
@@ -231,7 +242,7 @@ Optional runtime inputs:
 - `crawl-allow-risky`
 
 Use `--crawl` to explore safe controls from the current screen and record app-map edges. Crawling is bounded by `--crawl-depth` and `--crawl-limit`.
-Use `--crawl-include <text>` and `--crawl-allow-risky` on sandbox/dev builds when you intentionally want the crawler to include otherwise risky controls such as deposit, sell, withdraw, or logout surfaces.
+Use `--crawl-include <text>` and `--crawl-allow-risky` on sandbox/dev builds when you intentionally want the crawler to include otherwise risky controls such as delete, logout, purchase, or confirm surfaces.
 
 Response data fields:
 
@@ -256,8 +267,12 @@ Required input:
 Optional input:
 
 - `stop`
+- `force`
+- `record-values`
 
 `visor record <name>` creates `.visor/flows/<name>.json` and marks it active. Successful direct action commands append ordered steps to every active flow. `visor record <name> --stop` closes the flow so it can be replayed.
+
+Recording is privacy-preserving by default: typed `act --name type` values are redacted from the flow, and map, observation, and screen metadata are not persisted into `.visor/flows/*.json`. Use `--record-values` only when you intentionally want typed values saved for replay. Starting a recording fails if a flow with the same name already exists; pass `--force` to overwrite it.
 
 ### `replay`
 
@@ -279,7 +294,7 @@ Optional runtime inputs:
 - `repair`
 - `param` as `key=value`
 
-`replay` converts recorded steps into a generated scenario and runs it through the Appium-backed daemon path. `--param amount=100` substitutes `{{amount}}` placeholders in recorded args before execution.
+`replay` converts recorded steps into a generated scenario and runs it through the Appium-backed daemon path. `--param query=shoes` substitutes `{{query}}` placeholders in recorded args before execution. Replay responses list substituted names in `data.param_keys` and do not echo parameter values.
 
 ## Scenario commands
 
@@ -402,7 +417,7 @@ Response data fields:
 - `daemon`
 - `appium`
 
-`daemon` includes process and diagnostic metadata such as `running`, `pid`, `socketPath`, `metadataPath`, `logPath`, `packageVersion`, `runtimeVersion`, `currentPackageVersion`, and `stale`. When `visor start` finds an already-running daemon whose package version differs from the current CLI package version, `daemon.stale` is `true` and the response includes `daemon.warning` and `daemon.nextAction`.
+`daemon` includes process and diagnostic metadata such as `running`, `pid`, `socketPath`, `metadataPath`, `logPath`, `packageVersion`, `runtimeVersion`, `currentPackageVersion`, and `stale`. When `visor start` finds an already-running daemon whose package version differs from the current CLI package version, or whose package version is `unknown`, `daemon.stale` is `true` and the response includes `daemon.warning` and `daemon.nextAction`.
 
 ### `status`
 
@@ -418,7 +433,7 @@ Response data fields:
 - `daemon`
 - `appium`
 
-`daemon.packageVersion` and `daemon.runtimeVersion` describe the running daemon process. `daemon.currentPackageVersion` describes the CLI process that produced the status response. If those package versions differ, `daemon.stale` is `true`, `daemon.warning` explains the mismatch, and `daemon.nextAction` is `restart`. Visor reports this state but does not automatically restart the daemon.
+`daemon.packageVersion` and `daemon.runtimeVersion` describe the running daemon process. `daemon.currentPackageVersion` describes the CLI process that produced the status response. If those package versions differ, or the daemon does not report a package version and is shown as `unknown`, `daemon.stale` is `true`, `daemon.warning` explains the mismatch, and `daemon.nextAction` is `restart`. Visor reports this state but does not automatically restart the daemon.
 
 ### `stop`
 

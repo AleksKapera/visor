@@ -147,4 +147,37 @@ describe('daemon version metadata', () => {
       }
     );
   });
+
+  it('marks older daemons without package version metadata as stale and recommends restart', async () => {
+    const currentVersion = packageVersion();
+
+    await withFakeRunningDaemon(
+      {
+        runtimeVersion: 'v20.0.0',
+        activeOperation: null,
+        lastError: null,
+        sessions: []
+      },
+      async () => {
+        const status = await statusVisorDaemon();
+        const statusDaemon = status.daemon as Record<string, unknown>;
+
+        expect(statusDaemon.running).toBe(true);
+        expect(statusDaemon.packageVersion).toBe('unknown');
+        expect(statusDaemon.currentPackageVersion).toBe(currentVersion);
+        expect(statusDaemon.stale).toBe(true);
+        expect(statusDaemon.warning).toContain('does not report a package version');
+        expect(statusDaemon.nextAction).toBe('restart');
+
+        const started = await startVisorDaemon();
+        const startDaemon = started.daemon as Record<string, unknown>;
+
+        expect(startDaemon.alreadyRunning).toBe(true);
+        expect(startDaemon.packageVersion).toBe('unknown');
+        expect(startDaemon.currentPackageVersion).toBe(currentVersion);
+        expect(startDaemon.stale).toBe(true);
+        expect(startDaemon.nextAction).toBe('restart');
+      }
+    );
+  });
 });

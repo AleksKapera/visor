@@ -89,6 +89,24 @@ class ScreenGraphAdapter implements PlatformAdapter {
     if (args.label !== 'app-map-settle') {
       this.actions.push(`wait:${String(args.ms ?? '')}`);
     }
+    if (typeof args.for === 'string') {
+      return {
+        action: 'wait',
+        args: {
+          ...args,
+          matched: await this.exists(args.for)
+        }
+      };
+    }
+    if (args.stable === true) {
+      return {
+        action: 'wait',
+        args: {
+          ...args,
+          matched: false
+        }
+      };
+    }
     return { action: 'wait', args };
   }
 
@@ -155,6 +173,16 @@ function scenarioWithWait(): Scenario {
     meta: { name: 'wait', version: '1.0.0' },
     config: {},
     steps: [{ id: 'wait', command: 'wait', args: { ms: 1 } }],
+    assertions: [],
+    output: {}
+  };
+}
+
+function scenarioWithWaitFor(target: string): Scenario {
+  return {
+    meta: { name: `wait for ${target}`, version: '1.0.0' },
+    config: {},
+    steps: [{ id: 'wait-for-target', command: 'wait', args: { for: target, timeout: 100 } }],
     assertions: [],
     output: {}
   };
@@ -1185,6 +1213,38 @@ const riskyIncludedCrawlGraph = {
   }
 };
 
+const destructiveRiskyCrawlGraph = {
+  home: {
+    source:
+      '<App><Button name="Delete" label="Delete" x="20" y="140" width="150" height="44" />' +
+      '<Button name="Logout" label="Logout" x="20" y="200" width="150" height="44" />' +
+      '<Button name="Purchase" label="Purchase" x="20" y="260" width="150" height="44" />' +
+      '<Button name="Confirm" label="Confirm" x="20" y="320" width="150" height="44" /></App>',
+    taps: { Delete: 'deleted', Logout: 'logged_out', Purchase: 'purchased', Confirm: 'confirmed' },
+    coordinateTaps: { '95,162': 'deleted', '95,222': 'logged_out', '95,282': 'purchased', '95,342': 'confirmed' }
+  },
+  deleted: {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /></App>',
+    taps: { Back: 'home' },
+    coordinateTaps: { '40,90': 'home' }
+  },
+  logged_out: {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /></App>',
+    taps: { Back: 'home' },
+    coordinateTaps: { '40,90': 'home' }
+  },
+  purchased: {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /></App>',
+    taps: { Back: 'home' },
+    coordinateTaps: { '40,90': 'home' }
+  },
+  confirmed: {
+    source: '<App><Button name="Back" label="Back" x="0" y="73" width="90" height="34" /></App>',
+    taps: { Back: 'home' },
+    coordinateTaps: { '40,90': 'home' }
+  }
+};
+
 describe('app map execution', () => {
   it('crawls safe controls during discovery so later runs can route through them', async () => {
     const mapRoot = appMapDir();
@@ -1295,6 +1355,50 @@ describe('app map execution', () => {
     ]);
   });
 
+  it('does not crawl destructive controls unless risky crawling is explicitly allowed', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.destructive-risky-crawl',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 4,
+      crawlSettleMs: 0
+    };
+
+    const defaultAdapter = new ScreenGraphAdapter(destructiveRiskyCrawlGraph);
+    const defaultDiscovery = await discoverAppMap(defaultAdapter, mapOptions);
+
+    expect(defaultDiscovery).toMatchObject({
+      crawl: {
+        actions: 0
+      }
+    });
+    expect(defaultAdapter.actions).toEqual(['source:home']);
+
+    const optedInAdapter = new ScreenGraphAdapter(destructiveRiskyCrawlGraph);
+    const optedInDiscovery = await discoverAppMap(optedInAdapter, {
+      ...mapOptions,
+      appId: 'com.example.destructive-risky-crawl-opt-in',
+      crawlAllowRisky: true,
+      crawlInclude: ['Confirm']
+    });
+
+    expect(optedInDiscovery).toMatchObject({
+      crawl: {
+        actions: 1
+      }
+    });
+    expect(optedInAdapter.actions).toEqual([
+      'source:home',
+      'tap:95,342',
+      'source:confirmed',
+      'tap:40,90',
+      'source:home'
+    ]);
+  });
+
   it('persists and uses coordinate exit recipes for Flutter-style back controls', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
@@ -1366,8 +1470,9 @@ describe('app map execution', () => {
         variant_id: 'variant_2',
         screen_id: 'screen_2'
       },
-      visible_text: ['Advanced']
+      visible_text_count: 1
     });
+    expect(directDetails.observation).not.toHaveProperty('visible_text');
     expect((directDetails.observation as { before_fingerprint?: unknown }).before_fingerprint).toEqual(expect.any(String));
     expect((directDetails.observation as { after_fingerprint?: unknown }).after_fingerprint).toEqual(expect.any(String));
 
@@ -1392,8 +1497,9 @@ describe('app map execution', () => {
         variant_id: 'variant_2',
         screen_id: 'screen_2'
       },
-      visible_text: ['Advanced']
+      visible_text_count: 1
     });
+    expect(scenarioRun.steps[0]?.details.observation).not.toHaveProperty('visible_text');
   });
 
   it('prioritizes bottom navigation during crawl and restores through target tabs', async () => {
@@ -3301,6 +3407,39 @@ describe('app map execution', () => {
     expect(loadOnlyRun.status).toBe('ok');
     expect(loadOnlyRun.map?.updated).toBe(true);
     expect(fs.readFileSync(mapPath, 'utf8')).not.toContain('secret-token-legacy');
+  });
+
+  it('fails scenario wait steps when the predicate times out', async () => {
+    const run = await runScenario(
+      scenarioWithWaitFor('text=Ready'),
+      new ScreenGraphAdapter({
+        home: {
+          source: '<App><StaticText name="Loading" label="Loading" /></App>',
+          taps: {}
+        }
+      }),
+      'simulator',
+      undefined,
+      undefined,
+      true,
+      { enabled: false }
+    );
+
+    expect(run.status).toBe('fail');
+    expect(run.steps[0]).toMatchObject({
+      command: 'wait',
+      status: 'fail',
+      details: {
+        args: {
+          for: 'text=Ready',
+          matched: false
+        }
+      },
+      error: {
+        code: 'ACTION_ERROR',
+        likely_cause: expect.stringContaining('matched:false')
+      }
+    });
   });
 
   it('refuses ambiguous text route targets instead of guessing', async () => {
