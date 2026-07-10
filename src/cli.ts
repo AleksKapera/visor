@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { DEFAULT_SERVER_URL } from './adapters.js';
+import { parseAppMapAnnotation } from './appMapAnnotations.js';
 import {
   DaemonOperationError,
   DaemonRequestTimeoutError,
@@ -18,7 +19,9 @@ import { makeError } from './errors.js';
 import { LocalRuntimeAdapter } from './localRuntime.js';
 import { writeReports } from './report.js';
 import { determinismCheck, runScenario } from './runner.js';
+import { COMMAND_NAMES } from './types.js';
 import type {
+  AppMapAnnotation,
   CommandName,
   CommandResponse,
   ErrorCode,
@@ -42,6 +45,10 @@ interface ParsedCommand {
 interface CommandResult {
   code: number;
   response: CommandResponse;
+}
+
+interface CommandExecutionInput {
+  stdin?: string;
 }
 
 interface RuntimeOptions {
@@ -326,15 +333,7 @@ function scenarioFromFlow(flow: RecordedFlow, params: Record<string, string>): S
   };
 }
 
-const ACTION_COMMANDS = new Set<CommandName>([
-  'tap',
-  'navigate',
-  'act',
-  'scroll',
-  'screenshot',
-  'wait',
-  'source'
-]);
+const ACTION_COMMANDS = new Set<CommandName>(COMMAND_NAMES);
 const ALL_COMMANDS = new Set<string>([
   ...ACTION_COMMANDS,
   'validate',
@@ -422,7 +421,8 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     'crawl-depth': 'number',
     'crawl-limit': 'number',
     'crawl-include': 'string',
-    'crawl-allow-risky': 'boolean'
+    'crawl-allow-risky': 'boolean',
+    'annotate-current': 'string'
   },
   benchmark: {
     runs: 'number',
@@ -566,6 +566,7 @@ function commandHelpText(command: string): { usageText: string; examples: string
   if (command === 'discover') {
     const examples = [
       'visor discover --app-id com.example.app',
+      'visor discover --app-id com.example.app --annotate-current /tmp/current-screen.json',
       'visor discover --app-id com.example.app --crawl --crawl-depth 2 --crawl-limit 24'
     ];
     return {
@@ -573,7 +574,7 @@ function commandHelpText(command: string): { usageText: string; examples: string
         'Visor discover',
         '',
         'Usage:',
-        '  visor discover [--app-id <id>] [--crawl] [runtime options]',
+        '  visor discover [--app-id <id>] [--annotate-current <file|->] [--crawl] [runtime options]',
         '',
         'Options:',
         '  --crawl                   Explore safe controls and record app-map edges',
@@ -581,6 +582,7 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --crawl-limit <n>         Maximum crawl actions, default 24',
         '  --crawl-include <text>    Only crawl controls matching this text',
         '  --crawl-allow-risky       Include risky controls when crawling sandbox/dev builds',
+        '  --annotate-current <file|->  Apply JSON semantics to the observed current screen; use - for stdin',
         '  --no-map                  Disable app-map reads and writes'
       ].join('\n'),
       examples
@@ -1316,9 +1318,41 @@ export async function cmdRun(parsed: ParsedCommand): Promise<CommandResult> {
   }
 }
 
-export async function cmdDiscover(parsed: ParsedCommand): Promise<CommandResult> {
+async function readStandardInput(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+export async function cmdDiscover(
+  parsed: ParsedCommand,
+  input: CommandExecutionInput = {}
+): Promise<CommandResult> {
   const commandId = makeId('cmd');
   const startedAt = utcNowIso();
+  const annotationPath = parsed.options['annotate-current'];
+  let annotation: AppMapAnnotation | undefined;
+  try {
+    annotation = typeof annotationPath === 'string'
+      ? parseAppMapAnnotation(
+          annotationPath === '-'
+            ? input.stdin ?? await readStandardInput()
+            : fs.readFileSync(annotationPath, 'utf8')
+        )
+      : undefined;
+  } catch (error) {
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'INPUT_ERROR',
+      'Invalid discovery annotation',
+      errorMessage(error),
+      'Fix the annotation JSON and retry before navigating away from the current screen'
+    );
+    return { code: 1, response };
+  }
   let runtime: RuntimeOptions;
   try {
     runtime = await resolvedRuntime(parsed.options);
@@ -1349,7 +1383,8 @@ export async function cmdDiscover(parsed: ParsedCommand): Promise<CommandResult>
       },
       {
         ...runtime.map,
-        appId: runtime.app_id
+        appId: runtime.app_id,
+        ...(annotation ? { annotation } : {})
       }
     );
     const response = envelopeOk(commandId, startedAt, [], 'run');
@@ -1914,7 +1949,10 @@ export async function cmdStop(parsed: ParsedCommand): Promise<CommandResult> {
   }
 }
 
-export async function executeCommand(argv: string[]): Promise<CommandResult> {
+export async function executeCommand(
+  argv: string[],
+  input: CommandExecutionInput = {}
+): Promise<CommandResult> {
   const requestedHelp = argv[0] === 'help' || argv.includes('--help') || argv.includes('-h');
   if (requestedHelp) {
     const helpCommand = argv.find((token) => ALL_COMMANDS.has(token));
@@ -1940,7 +1978,7 @@ export async function executeCommand(argv: string[]): Promise<CommandResult> {
     return cmdRun(parsed);
   }
   if (parsed.command === 'discover') {
-    return cmdDiscover(parsed);
+    return cmdDiscover(parsed, input);
   }
   if (parsed.command === 'benchmark') {
     return cmdBenchmark(parsed);

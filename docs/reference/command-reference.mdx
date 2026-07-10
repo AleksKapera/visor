@@ -240,9 +240,32 @@ Optional runtime inputs:
 - `crawl-limit`
 - `crawl-include`
 - `crawl-allow-risky`
+- `annotate-current`
 
 Use `--crawl` to explore safe controls from the current screen and record app-map edges. Crawling is bounded by `--crawl-depth` and `--crawl-limit`.
 Use `--crawl-include <text>` and `--crawl-allow-risky` on sandbox/dev builds when you intentionally want the crawler to include otherwise risky controls such as delete, logout, purchase, or confirm surfaces.
+
+Use `--annotate-current <file|->` to observe the current screen and merge semantic screen/action descriptions into that same observed variant. Pass a UTF-8 JSON file or `-` for one JSON value from standard input. Annotation input is validated before device selection or daemon work, and the update is applied before an optional crawl changes app state.
+
+```json
+{
+  "screen": {
+    "label": "Checkout shipping address",
+    "purpose": "Collect delivery details before payment"
+  },
+  "actions": [
+    {
+      "command": "tap",
+      "args": { "target": "text=Continue" },
+      "label": "Continue to payment",
+      "intent": "advance_checkout",
+      "safety": "safe"
+    }
+  ]
+}
+```
+
+`screen` and `actions` are optional individually, but the document must contain at least one screen or action. Screen annotations require `label` and `purpose`; they also accept `description` and `notes`. Actions require `command`, `args`, `label`, `intent`, and `safety`, where safety is `safe`, `needs-input`, `risky`, or `unknown`; they also accept `description` and `notes`. Unknown fields and unsupported commands fail with `INPUT_ERROR`.
 
 Response data fields:
 
@@ -250,7 +273,10 @@ Response data fields:
 - `map`
 - `map.summary`, when the persisted map can be read
 - `screen`
+- `annotation`, when `--annotate-current` is used
 - `crawl`, when `--crawl` is used
+
+`annotation` reports `screen_applied` plus action counts for `actions_inserted`, `actions_updated`, and `actions_merged`.
 
 `map.summary` is a path-free inventory of the persisted app map for review: schema version, identity, app id, platform, screen count, variant count, edge count, authentication-required variant count, and last update time.
 

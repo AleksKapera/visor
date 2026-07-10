@@ -112,6 +112,18 @@ describe('typescript cli', () => {
     expect(data.examples).toContain('visor tap --target "first-in-section=Featured products"');
   });
 
+  it('documents current-screen annotation input in discover help', async () => {
+    const result = await executeCommand(['discover', '--help']);
+    const data = responseData<{ usageText: string; examples: string[] }>(result.response.data);
+
+    expect(result.code).toBe(0);
+    expect(data.usageText).toContain('--annotate-current <file|->');
+    expect(data.usageText).toContain('observed current screen');
+    expect(data.examples).toContain(
+      'visor discover --app-id com.example.app --annotate-current /tmp/current-screen.json'
+    );
+  });
+
   it('returns command-specific help for capture commands', async () => {
     const expectations = [
       {

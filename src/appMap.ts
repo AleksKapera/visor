@@ -5,7 +5,10 @@ import path from 'node:path';
 
 import { resolveTapMode } from './adapters.js';
 import type {
+  AppMapAnnotation,
+  AppMapScreenAnnotation,
   CommandName,
+  MapActionSafety,
   MapExecutionOptions,
   MapExecutionSummary,
   MapRouteStep,
@@ -16,7 +19,7 @@ import { canonicalJson, ensureDir, signatureFor, utcNowIso } from './utils.js';
 
 export const APP_MAP_SCHEMA_VERSION = 1;
 
-type ControlSafety = 'safe' | 'needs-input' | 'risky' | 'unknown';
+type ControlSafety = MapActionSafety;
 type TargetKind = 'stable' | 'text' | 'text-contains' | 'section-first' | 'coordinate' | 'unknown';
 
 interface SourceElement {
@@ -50,6 +53,8 @@ interface SourceCapture {
 interface AppMapScreen {
   id: string;
   variant_ids: string[];
+  label?: string;
+  purpose?: string;
 }
 
 interface AppMapVariant {
@@ -66,6 +71,10 @@ interface AppMapVariant {
   observations: number;
   confidence: number;
   last_observed_at: string;
+  label?: string;
+  purpose?: string;
+  description?: string;
+  notes?: string[];
 }
 
 interface AppMapActionScope {
@@ -104,7 +113,7 @@ interface AppMapExitRecipe {
 }
 
 interface AppMapAction {
-  command: 'tap';
+  command: CommandName;
   intent: string;
   label: string;
   target?: string;
@@ -112,7 +121,9 @@ interface AppMapAction {
   safety: ControlSafety;
   scope?: AppMapActionScope;
   navigation_target?: string;
-  source: {
+  description?: string;
+  notes?: string[];
+  source?: {
     tag: string;
     x: number | null;
     y: number | null;
@@ -169,6 +180,7 @@ interface ResolvedMapOptions {
   crawlSettlePollMs: number;
   crawlInclude: string[];
   crawlAllowRisky: boolean;
+  annotation?: AppMapAnnotation;
 }
 
 interface AppMapContext {
@@ -358,7 +370,8 @@ function resolveOptions(platform: Platform, options?: AppMapExecutionOptions): R
     crawlInclude: Array.isArray(options?.crawlInclude)
       ? unique(options.crawlInclude.map((value) => String(value).trim()).filter(Boolean))
       : [],
-    crawlAllowRisky: options?.crawlAllowRisky === true
+    crawlAllowRisky: options?.crawlAllowRisky === true,
+    annotation: options?.annotation
   };
 }
 
@@ -618,8 +631,8 @@ function structuralElementTarget(tag: string, attrs: Record<string, string>): st
 function redactLabel(value: string): string {
   return value
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '<redacted-email>')
-    .replace(/\b(?:\+?\d[\d .()-]{7,}\d)\b/g, '<redacted-phone>')
-    .replace(/\b(?:\d[ -]*?){13,19}\b/g, '<redacted-card>');
+    .replace(/\b(?:\d[ -]*?){13,19}\b/g, '<redacted-card>')
+    .replace(/\b(?:\+?\d[\d .()-]{7,}\d)\b/g, '<redacted-phone>');
 }
 
 function classifyControl(tag: string, labels: string[], attrs: Record<string, string>): ControlSafety {
@@ -777,8 +790,12 @@ function isBundleLikeLabel(normalized: string): boolean {
   return /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,}$/.test(normalized);
 }
 
-function newVariant(map: AppMapFile, observation: ScreenObservation): AppMapVariant {
-  const screen: AppMapScreen = {
+function newVariant(
+  map: AppMapFile,
+  observation: ScreenObservation,
+  logicalScreen?: AppMapScreen
+): AppMapVariant {
+  const screen: AppMapScreen = logicalScreen ?? {
     id: `screen_${map.screens.length + 1}`,
     variant_ids: []
   };
@@ -795,12 +812,54 @@ function newVariant(map: AppMapFile, observation: ScreenObservation): AppMapVari
     auth_required: observation.auth_required,
     observations: 1,
     confidence: 0.6,
-    last_observed_at: utcNowIso()
+    last_observed_at: utcNowIso(),
+    ...(screen.label ? { label: screen.label } : {}),
+    ...(screen.purpose ? { purpose: screen.purpose } : {})
   };
   screen.variant_ids.push(variant.id);
-  map.screens.push(screen);
+  if (!logicalScreen) {
+    map.screens.push(screen);
+  }
   map.variants.push(variant);
   return variant;
+}
+
+function annotatedLogicalScreenForObservation(
+  map: AppMapFile,
+  observation: ScreenObservation
+): AppMapScreen | undefined {
+  const observedNavigationTarget = preferredNavigationTargetForElements(observation.elements);
+  const observedKeys = new Set(identityKeys(observation.elements, false));
+  let selected: { screen: AppMapScreen; score: number } | undefined;
+
+  for (const screen of map.screens) {
+    if (!screen.label || !screen.purpose) {
+      continue;
+    }
+    for (const variantId of screen.variant_ids) {
+      const variant = map.variants.find((candidate) => candidate.id === variantId);
+      if (!variant) {
+        continue;
+      }
+      const variantNavigationTarget = preferredNavigationTarget(variant);
+      if (
+        observedNavigationTarget &&
+        variantNavigationTarget &&
+        observedNavigationTarget !== variantNavigationTarget
+      ) {
+        continue;
+      }
+      const sharedControls = identityKeys(variant.elements, false)
+        .filter((key) => observedKeys.has(key)).length;
+      const score = screenSimilarity(variant.elements, observation.elements);
+      if (sharedControls < 2 || score < 0.3 || (selected && selected.score >= score)) {
+        continue;
+      }
+      selected = { screen, score };
+    }
+  }
+
+  return selected?.screen;
 }
 
 function upsertVariant(map: AppMapFile, observation: ScreenObservation): ObservedVariant {
@@ -848,7 +907,7 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
   if (!best || bestScore < requiredScore) {
     return {
       observation,
-      variant: newVariant(map, observation),
+      variant: newVariant(map, observation, annotatedLogicalScreenForObservation(map, observation)),
       created: true
     };
   }
@@ -859,7 +918,10 @@ function upsertVariant(map: AppMapFile, observation: ScreenObservation): Observe
   best.items = onScreenItemsForElements(observation.elements);
   best.exit_recipes = exitRecipesForElements(observation.elements);
   best.element_keys = observation.element_keys;
-  best.actions = actionAffordancesForElements(observation.elements);
+  best.actions = mergeObservedActions(
+    best.actions,
+    actionAffordancesForElements(observation.elements)
+  );
   best.auth_required = observation.auth_required;
   best.observations += 1;
   best.confidence = Math.min(1, best.confidence + 0.05);
@@ -920,6 +982,176 @@ function observeScreenObservation(context: AppMapContext, observation: ScreenObs
 
 async function observeCurrentScreen(context: AppMapContext): Promise<ObservedVariant> {
   return observeScreenObservation(context, await captureCurrentObservation(context));
+}
+
+interface AnnotationSummary {
+  screen_applied: boolean;
+  actions_inserted: number;
+  actions_updated: number;
+  actions_merged: number;
+}
+
+function redactedScreenAnnotation(annotation: AppMapScreenAnnotation): AppMapScreenAnnotation {
+  return {
+    label: redactLabel(annotation.label),
+    purpose: redactLabel(annotation.purpose),
+    ...(annotation.description ? { description: redactLabel(annotation.description) } : {}),
+    ...(annotation.notes ? { notes: annotation.notes.map(redactLabel) } : {})
+  };
+}
+
+function actionIdentity(command: CommandName, args: Record<string, unknown>): string {
+  return canonicalJson({ command, args });
+}
+
+function redactAnnotationValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return redactLabel(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(redactAnnotationValue);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, redactAnnotationValue(nested)])
+    );
+  }
+  return value;
+}
+
+function sanitizedAnnotationArgs(
+  command: CommandName,
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  const sanitized = redactAnnotationValue(structuredClone(args)) as Record<string, unknown>;
+  if (command === 'act' && sanitized.name === 'type') {
+    delete sanitized.value;
+  }
+  return sanitized;
+}
+
+function sameActionSemantics(left: AppMapAction, right: AppMapAction): boolean {
+  return canonicalJson(actionSemanticFields(left)) === canonicalJson(actionSemanticFields(right));
+}
+
+type ActionSemanticFields = Pick<AppMapAction, 'label' | 'intent' | 'safety' | 'description' | 'notes'>;
+
+function actionSemanticFields(action: ActionSemanticFields): ActionSemanticFields {
+  return {
+    label: action.label,
+    intent: action.intent,
+    safety: action.safety,
+    ...(action.description ? { description: action.description } : {}),
+    ...(action.notes ? { notes: action.notes } : {})
+  };
+}
+
+function redactedActionSemanticFields(
+  annotation: NonNullable<AppMapAnnotation['actions']>[number]
+): ActionSemanticFields {
+  return actionSemanticFields({
+    label: redactLabel(annotation.label),
+    intent: redactLabel(annotation.intent),
+    safety: annotation.safety,
+    ...(annotation.description ? { description: redactLabel(annotation.description) } : {}),
+    ...(annotation.notes ? { notes: annotation.notes.map(redactLabel) } : {})
+  });
+}
+
+function stableForLogicalScreen(
+  map: AppMapFile,
+  observedVariant: AppMapVariant,
+  annotation: AppMapScreenAnnotation
+): boolean {
+  const annotatedSiblings = map.variants.filter(
+    (variant) =>
+      variant.id !== observedVariant.id &&
+      variant.screen_id === observedVariant.screen_id &&
+      variant.label !== undefined &&
+      variant.purpose !== undefined
+  );
+  return annotatedSiblings.length === 0 || annotatedSiblings.every(
+    (variant) => variant.label === annotation.label && variant.purpose === annotation.purpose
+  );
+}
+
+function annotationMatchesAction(existing: AppMapAction, annotation: AppMapAction): boolean {
+  return (
+    existing.label === annotation.label &&
+    existing.intent === annotation.intent &&
+    existing.safety === annotation.safety &&
+    (annotation.description === undefined || existing.description === annotation.description) &&
+    (annotation.notes === undefined || canonicalJson(existing.notes) === canonicalJson(annotation.notes))
+  );
+}
+
+function applyCurrentAnnotation(
+  context: AppMapContext,
+  observed: ObservedVariant,
+  annotation: AppMapAnnotation
+): AnnotationSummary {
+  const summary: AnnotationSummary = {
+    screen_applied: false,
+    actions_inserted: 0,
+    actions_updated: 0,
+    actions_merged: 0
+  };
+
+  if (annotation.screen) {
+    const screenAnnotation = redactedScreenAnnotation(annotation.screen);
+    Object.assign(observed.variant, screenAnnotation);
+    const logicalScreen = context.map.screens.find((screen) => screen.id === observed.variant.screen_id);
+    if (logicalScreen && stableForLogicalScreen(context.map, observed.variant, screenAnnotation)) {
+      logicalScreen.label = screenAnnotation.label;
+      logicalScreen.purpose = screenAnnotation.purpose;
+    }
+    summary.screen_applied = true;
+  }
+
+  const sourceActions = actionAffordancesForElements(observed.variant.elements);
+  for (const annotationAction of annotation.actions ?? []) {
+    const sanitizedArgs = sanitizedAnnotationArgs(annotationAction.command, annotationAction.args);
+    const identity = actionIdentity(annotationAction.command, sanitizedArgs);
+    const existingIndex = observed.variant.actions.findIndex(
+      (action) => actionIdentity(action.command, action.args) === identity
+    );
+    const semanticAction: AppMapAction = {
+      command: annotationAction.command,
+      args: sanitizedArgs,
+      ...redactedActionSemanticFields(annotationAction)
+    };
+
+    if (existingIndex === -1) {
+      observed.variant.actions.push(semanticAction);
+      summary.actions_inserted += 1;
+      continue;
+    }
+
+    const existing = observed.variant.actions[existingIndex];
+    if (!existing || annotationMatchesAction(existing, semanticAction)) {
+      continue;
+    }
+    const sourceAction = sourceActions.find(
+      (action) => actionIdentity(action.command, action.args) === identity
+    );
+    observed.variant.actions[existingIndex] = {
+      ...existing,
+      ...semanticAction,
+      args: existing.args,
+      ...(existing.target ? { target: existing.target } : {}),
+      ...(existing.scope ? { scope: existing.scope } : {}),
+      ...(existing.navigation_target ? { navigation_target: existing.navigation_target } : {}),
+      ...(existing.source ? { source: existing.source } : {})
+    };
+    if (sourceAction && sameActionSemantics(existing, sourceAction)) {
+      summary.actions_merged += 1;
+    } else {
+      summary.actions_updated += 1;
+    }
+  }
+
+  context.changed = true;
+  return summary;
 }
 
 async function observeAfterAction(
@@ -1941,6 +2173,31 @@ function actionAffordancesForElements(elements: SourceElement[]): AppMapAction[]
   return actions;
 }
 
+function mergeObservedActions(existing: AppMapAction[], observed: AppMapAction[]): AppMapAction[] {
+  const observedIdentities = new Set<string>();
+  const merged = observed.map((observedAction) => {
+    const identity = actionIdentity(observedAction.command, observedAction.args);
+    observedIdentities.add(identity);
+    const existingAction = existing.find(
+      (candidate) => actionIdentity(candidate.command, candidate.args) === identity
+    );
+    if (!existingAction) {
+      return observedAction;
+    }
+    return {
+      ...observedAction,
+      ...actionSemanticFields(existingAction)
+    };
+  });
+
+  return [
+    ...merged,
+    ...existing.filter(
+      (action) => !observedIdentities.has(actionIdentity(action.command, action.args))
+    )
+  ];
+}
+
 function onScreenItemsForElements(elements: SourceElement[]): AppMapItem[] {
   return elements.map((element) => ({
     category: itemCategory(element),
@@ -2505,7 +2762,7 @@ function shouldUseActionForLiveSemanticTap(action: AppMapAction): boolean {
   return (
     typeof action.args.x === 'number' &&
     typeof action.args.y === 'number' &&
-    action.source.tag.toLowerCase().includes('xcuielementtype')
+    action.source?.tag.toLowerCase().includes('xcuielementtype') === true
   );
 }
 
@@ -3517,11 +3774,15 @@ export async function discoverAppMap(
 
   try {
     const observed = await observeCurrentScreen(context);
+    const annotation = context.options.annotation
+      ? applyCurrentAnnotation(context, observed, context.options.annotation)
+      : undefined;
     const crawl = context.options.crawl ? await crawlAppMap(context, observed) : undefined;
     const summary = persistAppMapContext(context);
     return {
       action: 'discover',
       map: summary,
+      ...(annotation ? { annotation } : {}),
       ...(crawl ? { crawl } : {}),
       screen: {
         variant_id: observed.variant.id,
