@@ -1,4 +1,4 @@
 interface:
   display_name: "Visor Mobile App Agent"
   short_description: "Discover, navigate, and repair mobile app maps"
-  default_prompt: "Use $visor-discovery to operate this running mobile app from compact map memory, discover unknown states safely, and execute known routes efficiently."
+  default_prompt: "Use $visor-discovery to agree on app exploration permissions, run AI-assisted semantic discovery without generic crawling, and operate known routes efficiently."

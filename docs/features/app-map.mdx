@@ -33,6 +33,8 @@ The compact file excludes raw UI source, screenshots, raw element inventories, f
 
 Use the repository's persistent `.visor/maps` directory for normal work. Preserve it between agent tasks so known screens and routes do not need rediscovery.
 
+Before expanding the map, agree on an exploration policy with the user: safe-only, explicitly scoped, or full access for the specific test environment and account. Ask how to handle login or whether you may register a test account. Do not infer credentials, account-creation permission, or authorization for dangerous actions.
+
 Use an explicit empty temporary directory only when you need proof that an agent started without prior knowledge:
 
 ```bash
@@ -49,7 +51,11 @@ visor discover \
   --observation-token <token>
 ```
 
-Choose meaningful safe actions and checkpoint each resulting screen. Generic crawl remains available for diagnostics, but do not run it by default.
+Populate the map through AI-assisted, screen-by-screen discovery: interpret compact memory, annotate the exact observation, choose the next action under the agreed permission policy, execute it, and checkpoint the resulting stable screen.
+
+Never use `discover --crawl` to populate or expand semantic memory. Generic crawl remains a low-level diagnostic compatibility tool; it cannot assign product meaning, honor user-specific forbidden actions, or handle authentication interactively.
+
+Keep each action's factual safety classification. Explicit full test access can authorize an agent to execute a risky or destructive action, but it does not turn that action into a `safe` route step. Execute authorized consequential actions directly, one at a time, and observe the result immediately.
 
 Copy executable recognizers exactly from compact memory, including whitespace and line breaks. Use screen-specific recognizers for path eligibility, and keep composite or unusually large accessibility containers marked `unknown` until you verify a precise safe target.
 

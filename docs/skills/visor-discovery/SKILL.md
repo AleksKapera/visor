@@ -17,6 +17,20 @@ Treat the installed repository skill as durable operating guidance and `.visor/m
 
 If `.visor/maps` already exists, preserve it. Never erase a map to repair one route unless the user explicitly requests a clean-room run.
 
+## Agree on exploration authority
+
+Before the first app interaction or any expansion of an existing map, ask one concise permission question. Establish:
+
+- `safe-only`: explore only actions already classified `safe`; use this default when the user does not answer;
+- `scoped`: follow the user's explicit allowed and forbidden actions;
+- `full-test-access`: exercise risky, destructive, and input-dependent actions only when the user explicitly grants that authority for this specific test app, environment, and account.
+
+Also ask how to handle authentication: let the user sign in manually, use a dedicated test account through an approved secret-sharing method, or register a new test account with permission. If the user already supplied these answers, do not ask again.
+
+Treat the scope literally. Full test access does not authorize actions in another environment, external system, real customer account, or real-money flow. Preserve each action's factual `safe`, `risky`, `needs-input`, or `unknown` classification even when the user authorizes execution.
+
+Never store credentials, session tokens, identity values, or registration secrets in annotations, route plans, compact memory, screenshots, source dumps, or reports. Prefer manual sign-in for secrets. When login blocks discovery, pause and ask for authentication or permission to create a test account instead of guessing credentials.
+
 ## Read agent memory first
 
 Run one `discover` when the current state is unknown:
@@ -73,7 +87,9 @@ Tokenized annotation does not read the device again. Exclude credentials, identi
 
 ## Perform initial discovery
 
-Repeat a narrow semantic loop:
+Populate the map through AI-assisted semantic discovery. Never run `discover --crawl` for initial discovery or map expansion, even when the user grants full test access. The generic crawler does not assign product meaning or reason about the user's permission boundaries.
+
+Repeat this narrow loop yourself:
 
 1. Read the compact current-screen memory.
 2. Select one high-value action classified `safe`.
@@ -84,7 +100,11 @@ Repeat a narrow semantic loop:
 
 Prioritize launch, authentication, permission, loading, empty, error, validation, global navigation, and reliable back or close states.
 
-Do not execute `risky`, `needs-input`, or `unknown` actions. Stop and report the gap when safe exploration cannot continue. Do not call `discover --crawl`; generic crawl is diagnostic compatibility behavior, not the semantic discovery workflow.
+Under `safe-only`, do not execute `risky`, `needs-input`, or `unknown` actions. Under `scoped` or `full-test-access`, execute only actions covered by the user's explicit authority and preserve their original risk classification.
+
+Deterministic route plans accept only `safe` steps. Execute an authorized risky, dangerous, destructive, or input-dependent action directly, one action at a time, then observe and checkpoint the resulting state immediately. Never hide it inside a safe route.
+
+Stop and report a gap when the current permission policy does not authorize the next useful action.
 
 Use screenshots or source only when compact memory cannot disambiguate a state or control. Never capture them after every successful action.
 
