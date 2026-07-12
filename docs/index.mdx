@@ -5,6 +5,19 @@ description: "Understand what visor does, what problems it solves, and which par
 
 visor gives AI agents direct evidence from running mobile apps.
 
+<Info>
+  **Nearly 3x faster than live Appium MCP navigation in our head-to-head analysis.**
+  Across four mobile flows, Visor 0.2.12's map-driven execution finished in 249
+  seconds versus 723 seconds for the Appium MCP baseline: a 2.9x speedup and 66%
+  less execution time. The deepest flow was 5.7x faster, and Visor used 31%
+  fewer execution tokens overall.
+</Info>
+
+The comparison reached the same answers and the same app-state block in both
+approaches. All four Visor route plans replayed on the first try without route
+rediscovery. The shallow, one-tap flow was effectively tied; the largest gains
+appeared as navigation depth increased.
+
 It does five things:
 
 1. Connects to a running iOS or Android app.
