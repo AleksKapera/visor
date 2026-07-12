@@ -18,6 +18,12 @@ This creates `.agents/skills/visor-discovery/` and `skills-lock.json`. Commit th
 
 For a complete installation and initial discovery run, paste the prompt from [Agent setup](/quickstart) into your coding agent.
 
+## Delegate device work to Navigator
+
+The setup prompt also copies project-scoped Navigator definitions to `.codex/agents/navigator.toml` and `.claude/agents/navigator.md`. Add root `AGENTS.md` and `CLAUDE.md` guidance that delegates every device observation and action to Navigator. The parent agent should describe the desired outcome and current permission boundary; Navigator should own Visor commands, recovery, live verification, and map maintenance.
+
+Navigator reads the installed `visor-discovery` skill before it touches the device. It reuses known actions and routes, repairs typed failures deliberately, and annotates new or changed screens, actions, selectors, transitions, and recovery paths as soon as the live app proves them. It never repairs a map by running generic crawl or editing runtime map files directly.
+
 ## Two storage layers
 
 Visor separates agent context from runtime evidence:

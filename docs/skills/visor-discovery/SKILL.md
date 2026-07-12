@@ -7,6 +7,12 @@ description: Operate running iOS and Android apps with Visor using compact seman
 
 Treat the installed repository skill as durable operating guidance and `.visor/maps` as private local memory. Prefer semantic map reads and deterministic route execution over repeated screenshots, source dumps, or generic crawling.
 
+## Route device work to Navigator
+
+When this repository contains `.codex/agents/navigator.toml` or `.claude/agents/navigator.md`, delegate every mobile device observation and action to the `navigator` agent. Pass it the requested outcome, permission policy, authentication method, device, app id, attach mode, and map directory. The parent agent must not issue Visor or other device-interaction commands itself.
+
+When already running as Navigator, continue with this skill instead of delegating recursively. During the initial installation turn, if the current client cannot load the new agent until restart, follow its definition inline once and tell the user to restart the client before the next device task.
+
 ## Establish project state
 
 1. Work from the mobile app repository root.

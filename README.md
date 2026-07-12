@@ -42,7 +42,7 @@ npx --yes skills@latest add AleksKapera/visor \
 
 Paste the [agent setup prompt](https://www.visorai.dev/docs/quickstart) into your coding agent to install the required Appium driver, connect to the running app, and build the initial semantic map.
 
-The repository skill teaches later agents to reuse compact map memory, execute deterministic routes, and rediscover only when the live app reaches an unknown state.
+The setup also installs project-scoped Navigator agents for Codex and Claude Code. Parent agents delegate every mobile device operation to Navigator, which reuses compact map memory, executes deterministic routes, recovers from typed failures, and updates new or stale map knowledge as the live app proves it.
 
 ## Documentation
 
