@@ -127,6 +127,56 @@ describe('adapter selector helpers', () => {
     }
   });
 
+  it('keeps Appium sessions alive while an agent reasons between commands', async () => {
+    const previous = process.env.VISOR_APPIUM_NEW_COMMAND_TIMEOUT_SECONDS;
+    delete process.env.VISOR_APPIUM_NEW_COMMAND_TIMEOUT_SECONDS;
+    const driver = createFakeDriver();
+    webdriverMock.remote.mockResolvedValue(driver);
+
+    try {
+      const adapter = await RealAppiumAdapter.create(
+        'ios',
+        'http://127.0.0.1:4723',
+        'simulator-udid',
+        'com.example.app',
+        true
+      );
+      expect(webdriverMock.remote).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: expect.objectContaining({
+            'appium:newCommandTimeout': 600
+          })
+        })
+      );
+      await adapter.close();
+
+      process.env.VISOR_APPIUM_NEW_COMMAND_TIMEOUT_SECONDS = '900';
+      webdriverMock.remote.mockClear();
+      webdriverMock.remote.mockResolvedValue(driver);
+      const configured = await RealAppiumAdapter.create(
+        'ios',
+        'http://127.0.0.1:4723',
+        'simulator-udid',
+        'com.example.app',
+        true
+      );
+      expect(webdriverMock.remote).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: expect.objectContaining({
+            'appium:newCommandTimeout': 900
+          })
+        })
+      );
+      await configured.close();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.VISOR_APPIUM_NEW_COMMAND_TIMEOUT_SECONDS;
+      } else {
+        process.env.VISOR_APPIUM_NEW_COMMAND_TIMEOUT_SECONDS = previous;
+      }
+    }
+  });
+
   it('passes iOS coordinate tap arguments as the Appium execute object', async () => {
     const driver = createFakeDriver();
     webdriverMock.remote.mockResolvedValue(driver);

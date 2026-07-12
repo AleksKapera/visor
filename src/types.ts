@@ -47,7 +47,7 @@ export interface AppMapAnnotation {
   actions?: AppMapActionAnnotation[];
 }
 
-export type CliCommandName = CommandName | 'discover';
+export type CliCommandName = CommandName | 'discover' | 'route';
 
 export interface ErrorPayload {
   code: ErrorCode;
@@ -116,6 +116,7 @@ export interface MapExecutionSummary {
   repairs: number;
   schema_version?: number;
   path?: string;
+  agent_path?: string;
   identity?: string;
   summary?: {
     schema_version?: number;
@@ -146,6 +147,7 @@ export interface MapExecutionOptions {
   crawlInclude?: string[];
   crawlAllowRisky?: boolean;
   annotation?: AppMapAnnotation;
+  annotationToken?: string;
 }
 
 export interface AssertionResult {

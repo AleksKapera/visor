@@ -9,6 +9,7 @@ import {
   createAppMapContext,
   createMapSummary,
   discoverAppMap,
+  executeRoutePlan,
   persistAppMapContext,
   runMappedCommand
 } from './appMap.js';
@@ -19,6 +20,7 @@ import {
   stopManagedAppium
 } from './appiumLifecycle.js';
 import { runScenario } from './runner.js';
+import type { RoutePlan } from './routePlan.js';
 import type {
   CommandName,
   MapExecutionOptions,
@@ -51,6 +53,7 @@ type DaemonRequest =
   | { type: 'status' }
   | { type: 'stop'; force?: boolean }
   | { type: 'discover'; runtime: RuntimeKeyInput; mapOptions?: MapExecutionOptions }
+  | { type: 'route'; runtime: RuntimeKeyInput; plan: RoutePlan; mapOptions?: MapExecutionOptions }
   | {
       type: 'action';
       runtime: RuntimeKeyInput;
@@ -222,6 +225,31 @@ export function isRecoverableSessionCacheError(error: unknown): boolean {
       message.includes('econnrefused')) ||
     (message.includes('127.0.0.1:8100') && message.includes('econnrefused'))
   );
+}
+
+export function isRecoverableRouteResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return false;
+  }
+  const attempts = (result as Record<string, unknown>).attempts;
+  if (!Array.isArray(attempts)) {
+    return false;
+  }
+  return attempts.some((attempt) => {
+    if (!attempt || typeof attempt !== 'object' || Array.isArray(attempt)) {
+      return false;
+    }
+    const steps = (attempt as Record<string, unknown>).steps;
+    return Array.isArray(steps) && steps.some((step) => {
+      if (!step || typeof step !== 'object' || Array.isArray(step)) {
+        return false;
+      }
+      const candidate = step as Record<string, unknown>;
+      return candidate.outcome === 'runtime_failure' &&
+        typeof candidate.error === 'string' &&
+        isRecoverableSessionCacheError(new Error(candidate.error));
+    });
+  });
 }
 
 async function requestDaemon(request: DaemonRequest, timeoutMs = 1000): Promise<DaemonResponse> {
@@ -587,6 +615,17 @@ export async function runDaemonDiscover(
   );
 }
 
+export async function runDaemonRoute(
+  runtime: RuntimeKeyInput,
+  plan: RoutePlan,
+  mapOptions?: MapExecutionOptions
+): Promise<Record<string, unknown>> {
+  return daemonRequestData<Record<string, unknown>>(
+    { type: 'route', runtime, plan, mapOptions },
+    600000
+  );
+}
+
 export async function runDaemonFromEnv(): Promise<void> {
   const options: DaemonOptions = {
     serverUrl: process.env.VISOR_DAEMON_SERVER_URL ?? DEFAULT_SERVER_URL,
@@ -666,6 +705,29 @@ export async function runDaemonFromEnv(): Promise<void> {
       const freshAdapter = await sessionFor(runtime);
       return runActionWithMap(freshAdapter, command, args, mapOptions);
     }
+  }
+
+  async function runRouteWithSessionRetry(
+    runtime: RuntimeKeyInput,
+    plan: RoutePlan,
+    mapOptions?: MapExecutionOptions
+  ): Promise<Record<string, unknown>> {
+    const adapter = await sessionFor(runtime);
+    const initial = await executeRoutePlan(adapter, plan, mapOptions);
+    if (!isRecoverableRouteResult(initial)) {
+      return initial;
+    }
+
+    await discardSession(runtime);
+    const freshAdapter = await sessionFor(runtime);
+    const retried = await executeRoutePlan(freshAdapter, plan, mapOptions);
+    return {
+      ...retried,
+      recovery: {
+        session_restarted: true,
+        initial_attempts: initial.attempts
+      }
+    };
   }
 
   async function runActionWithMap(
@@ -773,6 +835,20 @@ export async function runDaemonFromEnv(): Promise<void> {
               try {
                 const adapter = await sessionFor(request.runtime);
                 return await discoverAppMap(adapter, request.mapOptions);
+              } finally {
+                activeOperation = null;
+              }
+            });
+            response = { ok: true, data };
+          } else if (request.type === 'route') {
+            const data = await enqueue(async () => {
+              activeOperation = `route:${runtimeKey(request.runtime)}`;
+              try {
+                return await runRouteWithSessionRetry(
+                  request.runtime,
+                  request.plan,
+                  request.mapOptions
+                );
               } finally {
                 activeOperation = null;
               }

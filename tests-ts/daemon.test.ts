@@ -20,7 +20,12 @@ vi.mock('../src/appiumLifecycle.js', () => ({
   stopManagedAppium: vi.fn(async () => undefined)
 }));
 
-import { isRecoverableSessionCacheError, startVisorDaemon, statusVisorDaemon } from '../src/daemon.js';
+import {
+  isRecoverableRouteResult,
+  isRecoverableSessionCacheError,
+  startVisorDaemon,
+  statusVisorDaemon
+} from '../src/daemon.js';
 
 function packageVersion(): string {
   const packageJson = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8')) as {
@@ -108,6 +113,38 @@ describe('daemon session cache helpers', () => {
 
   it('does not treat regular action failures as recoverable cache misses', () => {
     expect(isRecoverableSessionCacheError(new Error('tap target was not found'))).toBe(false);
+  });
+
+  it('detects a recoverable session failure inside a structured route result', () => {
+    expect(
+      isRecoverableRouteResult({
+        status: 'needs_discovery',
+        attempts: [
+          {
+            path_id: 'primary',
+            steps: [
+              {
+                outcome: 'runtime_failure',
+                error: 'WebDriverError: A session is either terminated or not started'
+              }
+            ]
+          }
+        ]
+      })
+    ).toBe(true);
+    expect(
+      isRecoverableRouteResult({
+        status: 'needs_discovery',
+        attempts: [
+          {
+            path_id: 'primary',
+            steps: [
+              { outcome: 'verification_failure', error: 'Expected Settings did not match' }
+            ]
+          }
+        ]
+      })
+    ).toBe(false);
   });
 });
 

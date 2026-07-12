@@ -1,7 +1,9 @@
 ---
 title: Visor discovery skill and app-map annotations
-status: ready-for-agent
+status: superseded
 ---
+
+This specification is superseded by [Agent-first discovery and deterministic routes](./agent-discovery-and-deterministic-routes.md). The newer contract removes generic crawl from the default discovery workflow, adds compact agent memory and exact observation tokens, and introduces deterministic multi-path route execution.
 
 ## Problem Statement
 

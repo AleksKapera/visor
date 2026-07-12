@@ -1,61 +1,82 @@
 ---
-title: "App map"
-description: "Understand mapped execution, cached navigation, repair, and no-map mode."
+title: "Agent memory and deterministic routes"
+description: "Use compact semantic memory, exact observation tokens, deterministic route plans, and targeted rediscovery."
 ---
 
-Visor keeps a local app map so repeated mobile runs can reuse navigation it has already observed.
+Visor keeps navigation knowledge on the host so AI agents can reuse what they already learned about a mobile app.
 
-Mapped execution is enabled by default for direct target actions and scenario runs. Before a mapped target action, Visor reads lightweight UI source, matches the current screen variant, and checks whether the target is already visible. If not, it searches the app map for a known screen containing that target, replays a confirmed route, verifies the destination contract, and then performs the requested action.
+## Two storage layers
 
-## What the map stores
+Visor separates agent context from runtime evidence:
 
-The map is host-machine runtime state under `.visor/maps` by default. It is scoped by platform and app id.
+- The runtime index stores source fingerprints, elements, variants, and edge evidence that Visor needs to drive Appium.
+- Compact agent memory stores semantic screens, meaningful actions, executable destination selectors, known routes, reliability, and unresolved gaps.
 
-It stores:
+`visor discover` returns the current compact slice in `data.memory` and persists the complete agent file at `data.map.agent_path`. Do not load the runtime index at `data.map.path` into context.
 
-- schema version
-- app identity
-- screen records and screen variants
-- source-derived labels, selectors, and normalized fingerprints
-- agent-supplied screen labels, purposes, action labels, intents, safety, descriptions, and notes
-- navigation edges and destination contracts
-- confidence, candidate, stale, and failure evidence
+The compact file excludes raw UI source, screenshots, raw element inventories, form values, dynamic financial text, and identity-like content.
 
-Form values, secure input values, and email-like or payment-like text are redacted before the map is written. Stable labels such as field names and button labels are retained so route planning can still find safe controls.
+## Fresh discovery
 
-It does not embed screenshots. Normal screenshot artifacts still work when requested, but screenshots are not stored inside the persistent map.
+Use an explicit empty directory when you need proof that an agent started without prior knowledge:
 
-## Repair behavior
+```bash
+MAP_DIR="$(mktemp -d)"
+visor discover --device <id> --app-id <id> --attach --map-dir "$MAP_DIR"
+```
 
-When a cached edge reaches the wrong destination or a target is missing, Visor fails fast by default. If you pass `--repair`, Visor performs a bounded repair pass. The default repair budget is intentionally small: depth two and roughly thirty seconds.
+The response includes an `observation_token`. Annotate that exact observation without reading the device again:
 
-Repair can:
+```bash
+visor discover \
+  --device <id> --app-id <id> --attach --map-dir "$MAP_DIR" \
+  --annotate-current /tmp/current-screen.json \
+  --observation-token <token>
+```
 
-- retry from fresh UI source
-- demote a stale edge without deleting it after one failure
-- mark a route stale after repeated failures
-- explore only controls classified as safe
-- record repaired paths as candidates
-- promote candidate paths after repeated successful confirmation
+Choose meaningful safe actions and checkpoint each resulting screen. Generic crawl remains available for diagnostics, but do not run it by default.
 
-Risky controls such as delete, submit, logout, purchase, pay, and send are recorded as UI facts but are not clicked by default during repair. Form fields are observed but not filled unless a scenario explicitly performs a typing action.
+Copy executable recognizers exactly from compact memory, including whitespace and line breaks. Use screen-specific recognizers for path eligibility, and keep composite or unusually large accessibility containers marked `unknown` until you verify a precise safe target.
 
-## Target rules
+## Deterministic routes
 
-Stable selectors such as accessibility ids and element ids have the highest routing confidence. Unique exact visible text targets are eligible for route planning. Ambiguous text targets fail instead of guessing between credible destinations. Contains text targets route only when the contains value is specific enough to name UI content, so broad numeric values such as `$100` stay live/current-screen taps instead of becoming off-screen guesses. Section-relative targets such as `first-in-section=Featured products` route to the section screen and then tap the first safe item below that heading by source geometry. Coordinate taps are recorded as lower-confidence edges when they produce an observed screen transition, so later semantic targets can route through coordinate-driven navigation when needed.
+Use `visor route <plan.json|->` to execute an agent-authored route in one daemon request. A plan can provide multiple ordered paths. Each step includes:
 
-Authentication walls are remembered as auth-required states. If the current logged-out state cannot reach a target safely, Visor fails quickly with a clear authentication cause instead of rediscovering the same wall repeatedly.
+- a supported command and arguments;
+- `safety: "safe"`;
+- an expected semantic screen;
+- an executable selector and timeout that prove the destination.
 
-## Controls
+Visor rejects unsafe or malformed plans before device selection. It checks each path's optional starting selector, executes eligible paths in document order, checkpoints every step, and stops after the first complete path.
 
-Use `visor discover` to explicitly observe the current screen and update the map.
+## Unknown states
 
-Use `visor discover --annotate-current <file|->` to attach semantic screen and action descriptions to the screen observed by that same command. Stable screen labels and purposes are shared with sufficiently similar variants on the same logical screen; variant descriptions and notes remain specific. Action identity uses the Visor command plus normalized arguments, so repeated input updates an existing action instead of creating a duplicate. When a source action matches, Visor retains its selector, geometry, and scope while merging the semantic fields. Unmatched actions are stored as ordinary map facts without provenance or match markers.
+When an action reaches an unexpected screen, Visor records a candidate transition and refreshes compact memory. It then tries the next supplied path whose starting selector matches the live screen.
 
-Visor validates annotation JSON before selecting a device or contacting the daemon. Annotation text follows the map's privacy redaction, and typed `act` values are removed before persistence. The response acknowledges the screen update and inserted, updated, or merged action counts.
+If no path applies, the route result returns `status: "needs_discovery"` with:
 
-Use `visor discover --crawl` to explore safe controls from the current screen and record app-map edges before later runs. Crawling is bounded by `--crawl-depth` and `--crawl-limit`.
+- the exact observation token;
+- compact current-screen memory;
+- unresolved semantic gaps;
+- the agent-memory path;
+- the route-checkpoint path.
 
-Discover responses include `data.map.summary` when the persisted map can be read. Use this path-free summary to review map growth and share the map shape without exposing machine-specific `.visor` or temporary directories.
+You can annotate the unknown screen, add a safe recovery path, and resubmit the plan. Visor does not guess consequential actions.
 
-Use `--no-map` or `VISOR_NO_MAP=true` to disable both map reads and map writes for a command.
+The atomic checkpoint stores the validated plan, completed attempts, current observation token, and next route position. You can inspect it independently after a partial run and construct a recovery plan without reconstructing the failed request from logs.
+
+## Typed route outcomes
+
+Each route step reports one outcome:
+
+- `success`
+- `runtime_failure`
+- `verification_failure`
+
+Each path reports `completed`, `failed`, or `skipped`. Runtime failures do not count as bad locator evidence. If Appium drops a cached session, the daemon recreates it once and reruns the safe plan.
+
+## Session lifetime
+
+Visor sets Appium's command idle timeout to 600 seconds by default so an agent can reason between commands. Set `VISOR_APPIUM_NEW_COMMAND_TIMEOUT_SECONDS` to change it.
+
+Use `--no-map` or `VISOR_NO_MAP=true` to bypass map reads and writes for ordinary direct commands. Deterministic routes require map persistence because they checkpoint progress and rediscovery state.

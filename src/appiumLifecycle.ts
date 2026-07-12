@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 
 import { ensureDir, parseServerUrl, resolveExecutable, sleep, splitCommandLine } from './utils.js';
 
-export const DEFAULT_STARTUP_TIMEOUT_SECONDS = 20;
+export const DEFAULT_STARTUP_TIMEOUT_SECONDS = 60;
 
 interface ServerMetadata {
   pid: number;

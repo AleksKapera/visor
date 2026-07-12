@@ -3,6 +3,7 @@ export * from './appiumLifecycle.js';
 export * from './cli.js';
 export * from './errors.js';
 export * from './report.js';
+export * from './routePlan.js';
 export * from './runner.js';
 export * from './types.js';
 export * from './utils.js';

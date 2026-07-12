@@ -24,6 +24,7 @@ const daemonMock = vi.hoisted(() => {
     DaemonRequestTimeoutError,
     runDaemonAction: vi.fn(),
     runDaemonDiscover: vi.fn(),
+    runDaemonRoute: vi.fn(),
     runDaemonScenario: vi.fn(),
     startVisorDaemon: vi.fn(),
     statusVisorDaemon: vi.fn(),
@@ -89,6 +90,8 @@ describe('cli app map options', () => {
       'emulator-5554',
       '--app-id',
       'com.example.settings',
+      '--map-dir',
+      '/tmp/visor-agent-map',
       '--target',
       'Advanced'
     ]);
@@ -112,6 +115,7 @@ describe('cli app map options', () => {
       { target: 'Advanced' },
       {
         enabled: true,
+        rootDir: '/tmp/visor-agent-map',
         appId: 'com.example.settings'
       }
     );
@@ -1566,6 +1570,189 @@ describe('cli app map options', () => {
       );
     } finally {
       fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('sends a validated multi-path route plan to the daemon as one request', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-route-plan-'));
+    const planPath = path.join(workspace, 'account-settings.json');
+    fs.writeFileSync(
+      planPath,
+      `${JSON.stringify({
+        goal: 'account.settings',
+        rediscover: true,
+        paths: [
+          {
+            id: 'preferred',
+            from: { selector: 'accessibility=Post' },
+            steps: [
+              {
+                id: 'open-settings',
+                command: 'tap',
+                args: { x: 35, y: 90 },
+                safety: 'safe',
+                expect: {
+                  screen: 'account.settings',
+                  selector: 'accessibility=Your Account',
+                  timeout_ms: 30000
+                }
+              }
+            ]
+          },
+          {
+            id: 'fallback',
+            steps: [
+              {
+                id: 'open-settings-by-id',
+                command: 'tap',
+                args: { target: 'accessibility=Settings' },
+                safety: 'safe',
+                expect: {
+                  screen: 'account.settings',
+                  selector: 'accessibility=Your Account'
+                }
+              }
+            ]
+          }
+        ]
+      }, null, 2)}\n`,
+      'utf8'
+    );
+    daemonMock.runDaemonRoute.mockResolvedValue({
+      action: 'route',
+      status: 'completed',
+      goal: 'account.settings',
+      selected_path: 'preferred',
+      attempts: []
+    });
+
+    try {
+      const result = await executeCommand([
+        'route',
+        planPath,
+        '--device',
+        'emulator-5554',
+        '--app-id',
+        'com.example.settings'
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.response.data).toMatchObject({
+        action: 'route',
+        status: 'completed',
+        goal: 'account.settings',
+        selected_path: 'preferred'
+      });
+      expect(daemonMock.runDaemonRoute).toHaveBeenCalledWith(
+        {
+          platform: 'android',
+          server_url: 'http://127.0.0.1:4723',
+          device: 'emulator-5554',
+          app_id: 'com.example.settings',
+          attach_to_running: false
+        },
+        expect.objectContaining({
+          goal: 'account.settings',
+          rediscover: true,
+          paths: [
+            expect.objectContaining({ id: 'preferred' }),
+            expect.objectContaining({ id: 'fallback' })
+          ]
+        }),
+        {
+          enabled: true,
+          appId: 'com.example.settings'
+        }
+      );
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unsafe route steps before device selection or daemon work', async () => {
+    resetDeviceCommandRunner();
+    const result = await executeCommand(
+      ['route', '-', '--app-id', 'com.example.settings'],
+      {
+        stdin: JSON.stringify({
+          goal: 'account.deleted',
+          paths: [
+            {
+              id: 'delete-account',
+              steps: [
+                {
+                  id: 'delete',
+                  command: 'tap',
+                  args: { target: 'Delete account' },
+                  safety: 'risky',
+                  expect: {
+                    screen: 'account.deleted',
+                    selector: 'text=Account deleted'
+                  }
+                }
+              ]
+            }
+          ]
+        })
+      }
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.response).toMatchObject({
+      status: 'fail',
+      error: {
+        code: 'INPUT_ERROR',
+        message: 'Invalid route plan',
+        likely_cause: expect.stringContaining("safety must be 'safe'")
+      }
+    });
+    expect(daemonMock.runDaemonRoute).not.toHaveBeenCalled();
+  });
+
+  it('applies tokenized annotations inside an explicit fresh map directory', async () => {
+    const mapRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-fresh-agent-map-'));
+    daemonMock.runDaemonDiscover.mockResolvedValue({
+      action: 'discover',
+      observation_token: 'variant_1.0123456789abcdef',
+      annotation: { screen_applied: true },
+      map: { enabled: true, agent_path: path.join(mapRoot, 'agent', 'map.json') }
+    });
+
+    try {
+      const result = await executeCommand(
+        [
+          'discover',
+          '--device',
+          'emulator-5554',
+          '--app-id',
+          'com.example.fresh',
+          '--map-dir',
+          mapRoot,
+          '--annotate-current',
+          '-',
+          '--observation-token',
+          'variant_1.0123456789abcdef'
+        ],
+        {
+          stdin: JSON.stringify({
+            screen: { label: 'Home', purpose: 'Start app navigation' }
+          })
+        }
+      );
+
+      expect(result.code).toBe(0);
+      expect(daemonMock.runDaemonDiscover).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          rootDir: mapRoot,
+          annotationToken: 'variant_1.0123456789abcdef',
+          annotation: {
+            screen: { label: 'Home', purpose: 'Start app navigation' }
+          }
+        })
+      );
+    } finally {
+      fs.rmSync(mapRoot, { recursive: true, force: true });
     }
   });
 });

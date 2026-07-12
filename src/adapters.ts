@@ -536,6 +536,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
       envBool('VISOR_ATTACH_TO_RUNNING', 'PATF_ATTACH_TO_RUNNING', false);
     const server = parseServerUrl(this.serverUrl);
     const capabilities: Record<string, unknown> = {};
+    const newCommandTimeout = envNumber('VISOR_APPIUM_NEW_COMMAND_TIMEOUT_SECONDS', 600);
 
     if (!this.device) {
       throw new Error('A running device must be selected before creating an Appium session.');
@@ -552,7 +553,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
         'PATF_ANDROID_APP_ACTIVITY',
         '.MainActivity'
       );
-      capabilities['appium:newCommandTimeout'] = 60;
+      capabilities['appium:newCommandTimeout'] = newCommandTimeout;
 
       if (attachToRunning) {
         capabilities['appium:noReset'] = true;
@@ -566,7 +567,7 @@ export class RealAppiumAdapter implements PlatformAdapter {
       capabilities['appium:udid'] = this.device;
       capabilities['appium:bundleId'] =
         this.appId ?? env('VISOR_IOS_BUNDLE_ID', 'PATF_IOS_BUNDLE_ID', DEFAULT_IOS_BUNDLE);
-      capabilities['appium:newCommandTimeout'] = 60;
+      capabilities['appium:newCommandTimeout'] = newCommandTimeout;
 
       if (attachToRunning) {
         capabilities['appium:noReset'] = true;

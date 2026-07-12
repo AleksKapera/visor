@@ -20,6 +20,7 @@
   },
   "files": [
     "dist",
+    "docs/skills/visor-discovery",
     "README.md",
     "LICENSE"
   ],
