@@ -30,14 +30,19 @@ Supported today:
 - iOS
 - real Appium-backed runs
 
-## Install
+## Agent setup
 
 Visor ships as the npm package `visor-ai` and requires Node `20` or later.
 
 ```bash
-npm install -g visor-ai
-visor --help
+npm install --save-dev visor-ai@latest
+npx --yes skills@latest add AleksKapera/visor \
+  --skill visor-discovery --copy --yes
 ```
+
+Paste the [agent setup prompt](https://www.visorai.dev/docs/quickstart) into your coding agent to install the required Appium driver, connect to the running app, and build the initial semantic map.
+
+The repository skill teaches later agents to reuse compact map memory, execute deterministic routes, and rediscover only when the live app reaches an unknown state.
 
 ## Documentation
 

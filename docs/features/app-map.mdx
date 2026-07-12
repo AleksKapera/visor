@@ -5,6 +5,19 @@ description: "Use compact semantic memory, exact observation tokens, determinist
 
 Visor keeps navigation knowledge on the host so AI agents can reuse what they already learned about a mobile app.
 
+## Install the repository skill
+
+Install the skill into the mobile app repository so compatible coding agents receive the same map and interaction rules:
+
+```bash
+npx --yes skills@latest add AleksKapera/visor \
+  --skill visor-discovery --copy --yes
+```
+
+This creates `.agents/skills/visor-discovery/` and `skills-lock.json`. Commit those files with the app repository. Keep `.visor/` ignored because it contains private machine-local maps and runtime state.
+
+For a complete installation and initial discovery run, paste the prompt from [Agent setup](/quickstart) into your coding agent.
+
 ## Two storage layers
 
 Visor separates agent context from runtime evidence:
@@ -18,7 +31,9 @@ The compact file excludes raw UI source, screenshots, raw element inventories, f
 
 ## Fresh discovery
 
-Use an explicit empty directory when you need proof that an agent started without prior knowledge:
+Use the repository's persistent `.visor/maps` directory for normal work. Preserve it between agent tasks so known screens and routes do not need rediscovery.
+
+Use an explicit empty temporary directory only when you need proof that an agent started without prior knowledge:
 
 ```bash
 MAP_DIR="$(mktemp -d)"
@@ -48,6 +63,8 @@ Use `visor route <plan.json|->` to execute an agent-authored route in one daemon
 - an executable selector and timeout that prove the destination.
 
 Visor rejects unsafe or malformed plans before device selection. It checks each path's optional starting selector, executes eligible paths in document order, checkpoints every step, and stops after the first complete path.
+
+For one known action, reuse the stored command directly. For multiple steps or alternate paths, prefer one route request over separate CLI processes. This keeps the Appium session warm and avoids repeated source capture around known navigation.
 
 ## Unknown states
 
