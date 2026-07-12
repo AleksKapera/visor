@@ -2,9 +2,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createAppMapContext, discoverAppMap, mapDebugSnapshot, runMappedCommand } from '../src/appMap.js';
+import {
+  createAppMapContext,
+  discoverAppMap,
+  executeRoutePlan,
+  mapDebugSnapshot,
+  runMappedCommand
+} from '../src/appMap.js';
 import { runScenario } from '../src/runner.js';
 import { writeReports } from '../src/report.js';
+import type { RoutePlan } from '../src/routePlan.js';
 import type { AdapterCapability, PlatformAdapter, Scenario } from '../src/types.js';
 
 class ScreenGraphAdapter implements PlatformAdapter {
@@ -3790,7 +3797,7 @@ describe('app map execution', () => {
     expect(persistedText).not.toContain('secret-token-123');
   });
 
-  it('scrubs legacy typed act values from disk when loading and persisting a map', async () => {
+  it('scrubs legacy typed values and CLI transport options when loading a map', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
       enabled: true,
@@ -3835,8 +3842,28 @@ describe('app map execution', () => {
       },
       last_observed_at: new Date(0).toISOString()
     });
+    legacyMap.edges.push({
+      id: 'edge_legacy_map_dir',
+      from_variant_id: fromVariant?.id ?? 'variant_1',
+      to_variant_id: toVariant?.id ?? 'variant_2',
+      command: 'tap',
+      args: { target: 'Continue', 'map-dir': '/tmp/private-map-location' },
+      target: 'Continue',
+      confidence: 0.9,
+      successes: 1,
+      failures: 0,
+      stale: false,
+      candidate: false,
+      destination_contract: {
+        variant_id: toVariant?.id ?? 'variant_2',
+        required_targets: [],
+        normalized_fingerprint: toVariant?.normalized_fingerprint ?? ''
+      },
+      last_observed_at: new Date(0).toISOString()
+    });
     fs.writeFileSync(mapPath, `${JSON.stringify(legacyMap, null, 2)}\n`, 'utf8');
     expect(fs.readFileSync(mapPath, 'utf8')).toContain('secret-token-legacy');
+    expect(fs.readFileSync(mapPath, 'utf8')).toContain('/tmp/private-map-location');
 
     const loadOnlyRun = await runScenario(
       scenarioWithWait(),
@@ -3851,6 +3878,7 @@ describe('app map execution', () => {
     expect(loadOnlyRun.status).toBe('ok');
     expect(loadOnlyRun.map?.updated).toBe(true);
     expect(fs.readFileSync(mapPath, 'utf8')).not.toContain('secret-token-legacy');
+    expect(fs.readFileSync(mapPath, 'utf8')).not.toContain('/tmp/private-map-location');
   });
 
   it('fails scenario wait steps when the predicate times out', async () => {
@@ -4064,5 +4092,603 @@ describe('app map execution', () => {
     expect(authRun.status).toBe('fail');
     expect(authAdapter.actions).toEqual(['source:login']);
     expect(authRun.steps[0]?.error?.likely_cause).toContain('requires authentication');
+  });
+
+  it('creates compact agent memory from a brand-new map without persisting raw UI content', async () => {
+    const mapRoot = appMapDir();
+    const adapter = new ScreenGraphAdapter({
+      home: {
+        source:
+          '<App><Button name="Settings" label="Settings" />' +
+          '<StaticText name="$343.24&#10;Buying Power" label="$343.24&#10;Buying Power" />' +
+          '<StaticText name="Signed in account name" label="Signed in account name" /></App>',
+        taps: {}
+      }
+    });
+
+    const result = await discoverAppMap(adapter, {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.fresh'
+    });
+
+    expect(result.memory).toMatchObject({
+      schema: 'visor.agent-memory.v1',
+      current_screen: {
+        id: 'screen_1',
+        variant_id: 'variant_1',
+        actions: [
+          expect.objectContaining({
+            command: 'tap',
+            args: { target: 'Settings' },
+            safety: 'safe'
+          })
+        ]
+      },
+      gaps: [expect.objectContaining({ screen_id: 'screen_1', reason: 'needs_semantics' })]
+    });
+
+    const memoryPath = String((result.map as Record<string, unknown>).agent_path);
+    expect(memoryPath).toMatch(/\/agent\/[^/]+\.json$/);
+    expect(fs.existsSync(memoryPath)).toBe(true);
+    const persisted = fs.readFileSync(memoryPath, 'utf8');
+    expect(persisted).not.toContain('<App>');
+    expect(persisted).not.toContain('$343.24');
+    expect(persisted).not.toContain('Signed in account name');
+    expect(persisted).not.toContain('"elements"');
+  });
+
+  it('annotates the exact discovery observation token without reading the device again', async () => {
+    const mapRoot = appMapDir();
+    const adapter = new ScreenGraphAdapter({
+      home: {
+        source: '<App><Button name="Settings" label="Settings" /></App>',
+        taps: {}
+      }
+    });
+    const options = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.observation-token'
+    };
+
+    const first = await discoverAppMap(adapter, options);
+    const token = String(first.observation_token);
+    expect(token).toMatch(/^variant_1\.[a-f0-9]{16}$/);
+
+    const annotated = await discoverAppMap(adapter, {
+      ...options,
+      annotationToken: token,
+      annotation: {
+        screen: {
+          label: 'Account settings',
+          purpose: 'Manage account preferences'
+        }
+      }
+    });
+
+    expect(adapter.actions).toEqual(['source:home']);
+    expect(annotated).toMatchObject({
+      observation_token: token,
+      annotation: { screen_applied: true },
+      screen: {
+        screen_id: 'screen_1',
+        variant_id: 'variant_1'
+      },
+      memory: {
+        current_screen: {
+          label: 'Account settings',
+          purpose: 'Manage account preferences'
+        }
+      }
+    });
+  });
+
+  it('tries an eligible alternate route after the preferred path fails', async () => {
+    const mapRoot = appMapDir();
+    const adapter = new ScreenGraphAdapter({
+      home: {
+        source:
+          '<App><StaticText name="Home screen" label="Home screen" />' +
+          '<Button name="Broken" label="Broken" /><Button name="Settings" label="Settings" /></App>',
+        taps: { Settings: 'settings' }
+      },
+      settings: {
+        source: '<App><StaticText name="Settings screen" label="Settings screen" /></App>',
+        taps: {}
+      }
+    });
+    const plan: RoutePlan = {
+      goal: 'settings',
+      rediscover: true,
+      paths: [
+        {
+          id: 'preferred',
+          from: { selector: 'Home screen' },
+          steps: [
+            {
+              id: 'broken-control',
+              command: 'tap',
+              args: { target: 'Broken' },
+              safety: 'safe',
+              expect: { screen: 'settings', selector: 'Settings screen', timeout_ms: 25 }
+            }
+          ]
+        },
+        {
+          id: 'fallback',
+          from: { selector: 'Home screen' },
+          steps: [
+            {
+              id: 'working-control',
+              command: 'tap',
+              args: { target: 'Settings' },
+              safety: 'safe',
+              expect: { screen: 'settings', selector: 'Settings screen', timeout_ms: 25 }
+            }
+          ]
+        }
+      ]
+    };
+
+    const result = await executeRoutePlan(adapter, plan, {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.routes'
+    });
+
+    expect(result).toMatchObject({
+      action: 'route',
+      status: 'completed',
+      goal: 'settings',
+      selected_path: 'fallback',
+      attempts: [
+        {
+          path_id: 'preferred',
+          status: 'failed',
+          steps: [expect.objectContaining({ id: 'broken-control', outcome: 'runtime_failure' })]
+        },
+        {
+          path_id: 'fallback',
+          status: 'completed',
+          steps: [expect.objectContaining({ id: 'working-control', outcome: 'success' })]
+        }
+      ]
+    });
+    expect(adapter.actions).toContain('tap:Broken');
+    expect(adapter.actions).toContain('tap:Settings');
+    expect(fs.readdirSync(mapRoot)).toContainEqual(expect.stringMatching(/\.json$/));
+  });
+
+  it('checkpoints an unexpected screen and continues through an eligible recovery path', async () => {
+    const mapRoot = appMapDir();
+    const adapter = new ScreenGraphAdapter({
+      home: {
+        source:
+          '<App><StaticText name="Home screen" label="Home screen" />' +
+          '<Button name="Surprise" label="Surprise" /></App>',
+        taps: { Surprise: 'unknown' }
+      },
+      unknown: {
+        source:
+          '<App><StaticText name="Unexpected interstitial" label="Unexpected interstitial" />' +
+          '<Button name="Recover" label="Recover" /></App>',
+        taps: { Recover: 'settings' }
+      },
+      settings: {
+        source: '<App><StaticText name="Settings screen" label="Settings screen" /></App>',
+        taps: {}
+      }
+    });
+    const plan: RoutePlan = {
+      goal: 'settings',
+      rediscover: true,
+      paths: [
+        {
+          id: 'preferred',
+          from: { selector: 'Home screen' },
+          steps: [
+            {
+              id: 'unexpected-transition',
+              command: 'tap',
+              args: { target: 'Surprise' },
+              safety: 'safe',
+              expect: { screen: 'settings', selector: 'Settings screen', timeout_ms: 25 }
+            }
+          ]
+        },
+        {
+          id: 'recover-interstitial',
+          from: { selector: 'Unexpected interstitial' },
+          steps: [
+            {
+              id: 'recover',
+              command: 'tap',
+              args: { target: 'Recover' },
+              safety: 'safe',
+              expect: { screen: 'settings', selector: 'Settings screen', timeout_ms: 25 }
+            }
+          ]
+        }
+      ]
+    };
+
+    const result = await executeRoutePlan(adapter, plan, {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.unknown-route'
+    });
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      selected_path: 'recover-interstitial',
+      attempts: [
+        {
+          path_id: 'preferred',
+          steps: [expect.objectContaining({ outcome: 'verification_failure' })]
+        },
+        {
+          path_id: 'recover-interstitial',
+          steps: [expect.objectContaining({ outcome: 'success' })]
+        }
+      ]
+    });
+    const persisted = mapDebugSnapshot(mapRoot, 'ios', 'com.example.unknown-route') as {
+      screens: unknown[];
+      edges: Array<{ candidate: boolean; target?: string }>;
+    };
+    expect(persisted.screens).toHaveLength(3);
+    expect(persisted.edges).toContainEqual(
+      expect.objectContaining({ candidate: true, target: 'Surprise' })
+    );
+  });
+
+  it('returns compact discovery context when no recovery path matches an unknown screen', async () => {
+    const mapRoot = appMapDir();
+    const adapter = new ScreenGraphAdapter({
+      home: {
+        source: '<App><Button name="Continue" label="Continue" /></App>',
+        taps: { Continue: 'unknown' }
+      },
+      unknown: {
+        source:
+          '<App><StaticText name="Permission explanation" label="Permission explanation" />' +
+          '<Button name="Not now" label="Not now" /></App>',
+        taps: {}
+      }
+    });
+    const plan: RoutePlan = {
+      goal: 'dashboard',
+      rediscover: true,
+      paths: [
+        {
+          id: 'continue',
+          steps: [
+            {
+              id: 'continue',
+              command: 'tap',
+              args: { target: 'Continue' },
+              safety: 'safe',
+              expect: { screen: 'dashboard', selector: 'Dashboard', timeout_ms: 25 }
+            }
+          ]
+        }
+      ]
+    };
+
+    const result = await executeRoutePlan(adapter, plan, {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.discovery-required'
+    });
+
+    expect(result).toMatchObject({
+      status: 'needs_discovery',
+      attempts: [
+        {
+          path_id: 'continue',
+          steps: [expect.objectContaining({ outcome: 'verification_failure' })]
+        }
+      ],
+      rediscovery: {
+        next_action: 'annotate_current',
+        observation_token: expect.stringMatching(/^variant_2\.[a-f0-9]{16}$/),
+        current_screen: {
+          id: 'screen_2',
+          variant_id: 'variant_2',
+          actions: [expect.objectContaining({ args: { target: 'Not now' } })]
+        },
+        gaps: expect.arrayContaining([
+          expect.objectContaining({ screen_id: 'screen_2', reason: 'needs_semantics' })
+        ])
+      }
+    });
+    expect(fs.existsSync(String((result.rediscovery as Record<string, unknown>).agent_path))).toBe(true);
+    expect(fs.existsSync(String(result.checkpoint_path))).toBe(true);
+  });
+
+  it('observes the current screen when every supplied path is skipped', async () => {
+    const mapRoot = appMapDir();
+    const adapter = new ScreenGraphAdapter({
+      home: {
+        source: '<App><StaticText name="Unmapped home" label="Unmapped home" /></App>',
+        taps: {}
+      }
+    });
+
+    const result = await executeRoutePlan(
+      adapter,
+      {
+        goal: 'settings',
+        rediscover: true,
+        paths: [
+          {
+            id: 'known-state-only',
+            from: { selector: 'Known settings' },
+            steps: [
+              {
+                id: 'open',
+                command: 'tap',
+                args: { target: 'Settings' },
+                safety: 'safe',
+                expect: { screen: 'settings', selector: 'Settings', timeout_ms: 25 }
+              }
+            ]
+          }
+        ]
+      },
+      { enabled: true, rootDir: mapRoot, appId: 'com.example.all-skipped' }
+    );
+
+    expect(result).toMatchObject({
+      status: 'needs_discovery',
+      rediscovery: {
+        observation_token: expect.stringMatching(/^variant_1\.[a-f0-9]{16}$/),
+        current_screen: { id: 'screen_1', variant_id: 'variant_1' }
+      }
+    });
+  });
+
+  it('records an unexpected destination as a candidate without strengthening the known edge', async () => {
+    const mapRoot = appMapDir();
+    const appId = 'com.example.route-contract-failure';
+    const source =
+      '<App><StaticText name="Home" label="Home" /><Button name="Settings" label="Settings" /></App>';
+    const plan: RoutePlan = {
+      goal: 'settings',
+      rediscover: true,
+      paths: [
+        {
+          id: 'settings',
+          steps: [
+            {
+              id: 'open-settings',
+              command: 'tap',
+              args: { target: 'Settings' },
+              safety: 'safe',
+              expect: { screen: 'settings', selector: 'Settings screen', timeout_ms: 25 }
+            }
+          ]
+        }
+      ]
+    };
+
+    await executeRoutePlan(
+      new ScreenGraphAdapter({
+        home: { source, taps: { Settings: 'settings' } },
+        settings: {
+          source: '<App><StaticText name="Settings screen" label="Settings screen" /></App>',
+          taps: {}
+        }
+      }),
+      plan,
+      { enabled: true, rootDir: mapRoot, appId }
+    );
+
+    await executeRoutePlan(
+      new ScreenGraphAdapter({
+        home: { source, taps: { Settings: 'unknown' } },
+        unknown: {
+          source: '<App><StaticText name="Unexpected screen" label="Unexpected screen" /></App>',
+          taps: {}
+        }
+      }),
+      plan,
+      { enabled: true, rootDir: mapRoot, appId }
+    );
+
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', appId) as {
+      edges: Array<{
+        to_variant_id: string;
+        candidate: boolean;
+        successes: number;
+        failures: number;
+        confidence: number;
+      }>;
+    };
+    const known = snapshot.edges.find((edge) => !edge.candidate);
+    const candidate = snapshot.edges.find((edge) => edge.candidate);
+    expect(known).toMatchObject({ to_variant_id: 'variant_2', successes: 1, failures: 1 });
+    expect(known?.confidence).toBeLessThan(1);
+    expect(candidate).toMatchObject({ to_variant_id: 'variant_3', successes: 0, failures: 0 });
+  });
+
+  it('demotes a known locator when a route action has no visible effect', async () => {
+    const mapRoot = appMapDir();
+    const appId = 'com.example.route-no-effect';
+    const source =
+      '<App><StaticText name="Home" label="Home" /><Button name="Settings" label="Settings" /></App>';
+    const plan: RoutePlan = {
+      goal: 'settings',
+      rediscover: true,
+      paths: [
+        {
+          id: 'settings',
+          steps: [
+            {
+              id: 'open-settings',
+              command: 'tap',
+              args: { target: 'Settings' },
+              safety: 'safe',
+              expect: { screen: 'settings', selector: 'Settings screen', timeout_ms: 25 }
+            }
+          ]
+        }
+      ]
+    };
+
+    await executeRoutePlan(
+      new ScreenGraphAdapter({
+        home: { source, taps: { Settings: 'settings' } },
+        settings: {
+          source: '<App><StaticText name="Settings screen" label="Settings screen" /></App>',
+          taps: {}
+        }
+      }),
+      plan,
+      { enabled: true, rootDir: mapRoot, appId }
+    );
+    await executeRoutePlan(
+      new ScreenGraphAdapter({ home: { source, taps: { Settings: 'home' } } }),
+      plan,
+      { enabled: true, rootDir: mapRoot, appId }
+    );
+
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', appId) as {
+      edges: Array<{ target?: string; successes: number; failures: number; confidence: number }>;
+    };
+    expect(snapshot.edges.find((edge) => edge.target === 'Settings')).toMatchObject({
+      successes: 1,
+      failures: 1,
+      confidence: 0.65
+    });
+  });
+
+  it('excludes dynamic route arguments from compact agent memory', async () => {
+    for (const [index, dynamicTarget] of [
+      '$343.24 Buying Power',
+      '343.24 Buying Power',
+      'Aleks Kapera'
+    ].entries()) {
+      const mapRoot = appMapDir();
+      const appId = `com.example.dynamic-route-memory-${index}`;
+      const result = await executeRoutePlan(
+        new ScreenGraphAdapter({
+          home: {
+            source: `<App><Button name="${dynamicTarget}" label="${dynamicTarget}" /></App>`,
+            taps: { [dynamicTarget]: 'details' }
+          },
+          details: {
+            source: '<App><StaticText name="Buying power details" label="Buying power details" /></App>',
+            taps: {}
+          }
+        }),
+        {
+          goal: 'details',
+          rediscover: true,
+          paths: [
+            {
+              id: 'dynamic',
+              steps: [
+                {
+                  id: 'open',
+                  command: 'tap',
+                  args: { target: dynamicTarget },
+                  safety: 'safe',
+                  expect: { screen: 'details', selector: 'Buying power details', timeout_ms: 25 }
+                }
+              ]
+            }
+          ]
+        },
+        { enabled: true, rootDir: mapRoot, appId }
+      );
+
+      const memoryPath = String((result.map as Record<string, unknown>).agent_path);
+      expect(fs.readFileSync(memoryPath, 'utf8')).not.toContain(dynamicTarget);
+
+      const destinationMapRoot = appMapDir();
+      const destinationResult = await executeRoutePlan(
+        new ScreenGraphAdapter({
+          home: {
+            source: '<App><Button name="Open details" label="Open details" /></App>',
+            taps: { 'Open details': 'details' }
+          },
+          details: {
+            source: `<App><StaticText name="${dynamicTarget}" label="${dynamicTarget}" /></App>`,
+            taps: {}
+          }
+        }),
+        {
+          goal: 'details',
+          rediscover: true,
+          paths: [
+            {
+              id: 'dynamic-destination',
+              steps: [
+                {
+                  id: 'open',
+                  command: 'tap',
+                  args: { target: 'Open details' },
+                  safety: 'safe',
+                  expect: { screen: 'details', selector: dynamicTarget, timeout_ms: 25 }
+                }
+              ]
+            }
+          ]
+        },
+        { enabled: true, rootDir: destinationMapRoot, appId: `${appId}-destination` }
+      );
+      const destinationMemoryPath = String(
+        (destinationResult.map as Record<string, unknown>).agent_path
+      );
+      expect(fs.readFileSync(destinationMemoryPath, 'utf8')).not.toContain(dynamicTarget);
+    }
+  });
+
+  it('checkpoints the route plan, current observation, and resume position', async () => {
+    const mapRoot = appMapDir();
+    const result = await executeRoutePlan(
+      new ScreenGraphAdapter({
+        home: {
+          source: '<App><StaticText name="Home" label="Home" /><Button name="Continue" label="Continue" /></App>',
+          taps: { Continue: 'unknown' }
+        },
+        unknown: {
+          source: '<App><StaticText name="Unknown" label="Unknown" /></App>',
+          taps: {}
+        }
+      }),
+      {
+        goal: 'dashboard',
+        rediscover: true,
+        paths: [
+          {
+            id: 'continue',
+            steps: [
+              {
+                id: 'continue',
+                command: 'tap',
+                args: { target: 'Continue' },
+                safety: 'safe',
+                expect: { screen: 'dashboard', selector: 'Dashboard', timeout_ms: 25 }
+              }
+            ]
+          }
+        ]
+      },
+      { enabled: true, rootDir: mapRoot, appId: 'com.example.resumable-checkpoint' }
+    );
+
+    const checkpoint = JSON.parse(fs.readFileSync(String(result.checkpoint_path), 'utf8'));
+    expect(checkpoint).toMatchObject({
+      plan: { goal: 'dashboard', paths: [{ id: 'continue' }] },
+      current: {
+        observation_token: expect.stringMatching(/^variant_2\.[a-f0-9]{16}$/),
+        screen_id: 'screen_2',
+        variant_id: 'variant_2'
+      },
+      resume: { requires_discovery: true }
+    });
   });
 });

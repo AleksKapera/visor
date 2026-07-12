@@ -1,96 +1,165 @@
 ---
 name: visor-discovery
-description: Discover and semantically annotate a running mobile app with Visor. Use when an agent needs to inventory app screens, variants, navigation, controls, content, safe representative flows, risky or input-dependent functionality, and coverage gaps into Visor's persisted app map.
+description: Build and repair compact AI-only navigation memory for a running mobile app with Visor. Use when an agent starts without a map, needs to learn meaningful screens and safe actions, or must recover a deterministic route after an unknown state.
 ---
 
-# Visor Discovery
+# Visor agent discovery
 
-Build a useful semantic app map during one supervised tour. Observe often, annotate only new or improved meaning, execute safe actions only, and finish with bounded crawl plus explicit gaps.
+Build semantic interaction memory with agent reasoning. Do not treat the accessibility tree as the product map, and do not use generic crawling as the default discovery strategy.
 
-## Establish the target
+## Establish one target
 
-1. Confirm Node.js 20+, the Visor CLI, Appium drivers, a booted target, the installed app id, and any required test account or seed data.
-2. Run `visor status`. Start the daemon with `visor start` when needed.
-3. Keep one app/session alive. Use `--device <id>`, `--app-id <id>`, and `--attach` when the app is already running and its state must be preserved.
-4. Run plain discovery before navigating:
+1. Confirm Node.js 20+, Visor, Appium drivers, one booted target, the installed app id, and any required test account.
+2. Run `visor status`; start Visor when needed.
+3. Keep one app and session alive with explicit `--device`, `--app-id`, and `--attach` values.
+4. Use the same `--map-dir` on every discovery, action, and route command.
+
+For a provably fresh run, create an empty temporary directory and do not read any other map:
 
 ```bash
-visor discover --device <id> --app-id <id> --attach
+MAP_DIR="$(mktemp -d)"
+visor discover --device <id> --app-id <id> --attach --map-dir "$MAP_DIR"
 ```
 
-Inspect `data.screen`, `data.map.summary`, and the persisted map at `data.map.path`. Read the current variant's elements and actions. Use `visor screenshot` or `visor source` only when visual hierarchy, duplicate controls, source quality, or target identity is ambiguous.
+The first response provides:
 
-## Annotate the current screen
+- `data.observation_token`: immutable reference to that observation;
+- `data.memory.current_screen`: compact current screen and meaningful action candidates;
+- `data.memory.routes`: relevant learned routes only;
+- `data.memory.gaps`: screens that still need semantics;
+- `data.map.agent_path`: persistent compact agent memory.
 
-Do not navigate between observation and annotation. Reuse the exact `command` and `args` already stored on a source action when enriching it. Visor also accepts a standalone action that has no source match.
+Do not read the runtime index at `data.map.path`. It contains internal source evidence and is not agent context.
 
-Create one throwaway JSON file per annotation update:
+## Annotate the exact observation
+
+Give the current screen a stable product identity and enrich only meaningful actions. Do not include user identity, feed text, financial values, credentials, or other dynamic content.
 
 ```json
 {
   "screen": {
-    "label": "Checkout shipping address",
-    "purpose": "Collect delivery details before payment",
-    "description": "Optional variant-specific detail",
-    "notes": ["Optional operational note"]
+    "label": "Activity feed",
+    "purpose": "Review community updates and enter profile-level destinations"
   },
   "actions": [
     {
       "command": "tap",
-      "args": { "target": "text=Continue" },
-      "label": "Continue to payment",
-      "intent": "advance_checkout",
-      "safety": "safe",
-      "description": "Optional clarification",
-      "notes": ["Optional constraint"]
+      "args": { "target": "Activity" },
+      "label": "Open activity",
+      "intent": "open_activity",
+      "safety": "safe"
     }
   ]
 }
 ```
 
-`screen` and `actions` are optional individually, but provide at least one screen or action. A screen requires `label` and `purpose`. Every action requires `command`, `args`, `label`, `intent`, and `safety`. Safety is `safe`, `needs-input`, `risky`, or `unknown`. Do not add route annotations, expected destinations, provenance, real credentials, personal data, payment values, or typed input values.
-
-Apply the file while the intended screen is still current:
+Apply it with the token from the original response:
 
 ```bash
-visor discover --device <id> --app-id <id> --attach --annotate-current <temporary-json-file>
+visor discover \
+  --device <id> --app-id <id> --attach --map-dir "$MAP_DIR" \
+  --annotate-current <annotation.json> \
+  --observation-token <data.observation_token>
 ```
 
-Use `--annotate-current -` when piping one JSON value through standard input is easier. Prefer a temporary file when shell quoting nested JSON would be fragile.
+Tokenized annotation does not read the device again. Delete the temporary annotation only after `data.annotation` confirms the update.
 
-Delete the temporary file only after `status` is `ok`, `data.annotation` acknowledges the update, and `data.screen.variant_id` is the intended current variant. On failure, retain it only long enough to fix/retry, then remove it. The app map is the sole durable review artifact.
+## Explore agentically
 
-## Tour before crawling
+Repeat this loop:
 
-Repeat plain discovery, meaningful annotation, and safe navigation without replaying routes solely to annotate them.
+1. Read only the compact current-screen memory.
+2. Choose one safe action with high discovery value.
+3. Execute it through Visor with the same map directory.
+4. Run `discover` once on the resulting stable state.
+5. Annotate that observation token before taking another action.
+6. Checkpoint gaps immediately.
 
-1. Inventory the launch, authentication, permission, loading, empty, error, and validation states that are reachable.
-2. Identify global navigation: tabs, drawers, menus, back/close behavior, profile, and settings.
-3. Visit every safe top-level destination. Give each a stable screen label and purpose.
-4. Follow one representative safe happy path from each hub into meaningful nested/detail screens.
-5. Inspect dialogs, overlays, tab variants, scroll-revealed content, repeated cards, forms, and environment- or role-specific branches.
-6. Label actions by product meaning, not by repeating visible text. Keep `intent` short, stable, and purpose-oriented.
-7. Execute only actions classified `safe`. Annotate `needs-input`, `risky`, and `unknown` actions without executing them. Never use `--crawl-allow-risky` unless the user separately authorizes the specific consequential behavior in a safe sandbox.
-8. After the structured tour, run bounded crawl from useful hub screens:
+Prioritize:
+
+- launch, authentication, permission, loading, empty, error, and validation states;
+- global navigation and reliable back/close behavior;
+- every safe top-level destination;
+- one representative nested path per hub;
+- materially different dialogs, tabs, and role/environment states.
+
+Execute only `safe` actions. Record `needs-input`, `risky`, and `unknown` actions without executing them. Stop when remaining actions are unsafe, repetitive, low-value, or blocked. Report gaps explicitly.
+
+Use screenshots or source only when compact observation cannot disambiguate a control or state. Never capture them after every successful action.
+
+Treat selectors as executable data, not prose:
+
+- copy recognizers from compact memory exactly, including whitespace and line breaks;
+- prefer a screen-specific recognizer for `from.selector` over generic labels such as `Settings`;
+- mark a composite or unusually large accessibility container `unknown` until a precise safe target is verified;
+- keep stale estimates as `unknown` rather than silently replacing their safety evidence.
+
+`discover --crawl` remains a diagnostic compatibility tool. Do not run it by default and do not let crawl output author semantic memory.
+
+## Execute known routes
+
+Build a route plan from compact agent memory. Supply preferred and recovery paths in deterministic order. Every step must be safe and must include an executable destination selector.
+
+Use only selectors and coordinates that discovery verified on the live screen. A route expectation proves the destination, so copy its selector verbatim from that destination's compact recognizers instead of guessing a human-readable label.
+
+```json
+{
+  "goal": "account.settings",
+  "rediscover": true,
+  "paths": [
+    {
+      "id": "activity-settings",
+      "from": { "selector": "accessibility=Post" },
+      "steps": [
+        {
+          "id": "open-settings",
+          "command": "tap",
+          "args": { "x": 35, "y": 90 },
+          "safety": "safe",
+          "expect": {
+            "screen": "account.settings",
+            "selector": "accessibility=Your Account",
+            "timeout_ms": 30000
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Run the whole plan through one daemon request:
 
 ```bash
-visor discover --device <id> --app-id <id> --attach --crawl --crawl-depth 2 --crawl-limit 24
+visor route <plan.json|-> \
+  --device <id> --app-id <id> --attach --map-dir "$MAP_DIR"
 ```
 
-Use a smaller budget or `--crawl-include <text>` when scope or state is sensitive. Record the crawl stopping reason. Do not claim exhaustive coverage.
+Accept `status=completed` without routine screenshots. Visor checkpoints every step and tries the next eligible supplied path after failure.
 
-## Finish and report
+## Recover unknown states
 
-Stop when the checklist has been attempted, bounded crawl completed or stopped with a reason, semantic updates are persisted, and remaining gaps are explicit.
+When route status is `needs_discovery`:
+
+1. Read `data.rediscovery.current_screen`, `gaps`, and `observation_token`.
+2. Annotate that exact token.
+3. Decide whether a safe recovery exists.
+4. Add a path whose `from.selector` matches the unknown state.
+5. Resubmit the complete plan.
+
+Do not guess a consequential action. If no safe recovery exists, stop with the checkpoint path and a precise gap reason.
+
+## Finish
 
 Report:
 
-- app id, device, platform, and persisted map path
-- logical screens, variants, actions, edges, and authentication-required states from the final map summary
-- top-level destinations and representative happy paths covered
-- risky, unknown, and input-dependent functionality annotated but not executed
-- crawl budget, actions, variants, stopping reason, and restore failures
-- gaps with a reason: credentials, missing seed data, permission, risky action, external service, role/platform gating, environment failure, ambiguity, or budget
-- any temporary file or command failure that still needs cleanup or retry
+- app, device, platform, and agent-memory path;
+- semantic screens and meaningful actions learned;
+- known paths and recovery paths verified;
+- typed route failures and session recovery;
+- risky and input-dependent functions not executed;
+- unknown states and exact gap reasons;
+- whether the run started from an empty map directory;
+- temporary files that still require cleanup.
 
-Point the user to the persisted app map for review. Never report literal 100% discovery.
+Never claim exhaustive discovery.

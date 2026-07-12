@@ -66,19 +66,20 @@ Mapped execution metadata uses these fields:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `enabled` | boolean | Whether map reads and writes were enabled |
+| `enabled` | boolean | Whether Visor enabled map reads and writes |
 | `used` | boolean | Whether Visor used cached map knowledge for routing |
 | `updated` | boolean | Whether the host app map changed during the command |
 | `repaired` | boolean | Whether Visor repaired a stale or missing route |
 | `repairs` | number | Count of bounded repair passes used |
 | `schema_version` | number | App-map schema version |
 | `path` | string | Host path to the persisted app map when enabled |
+| `agent_path` | string | Host path to compact AI-only semantic memory |
 | `identity` | string | App-map identity, scoped by platform and app id |
 | `summary` | object | Path-free app-map inventory attached to `visor discover` responses when the persisted map can be read |
 
 Direct action commands return this object in `data.map`. Scenario runs return it in `data.run.map`. A routed or repaired step may also include `details.map.route`, an ordered list of hidden route actions Visor performed before the requested step action.
 
-`visor discover` adds `data.map.summary` when mapped execution is enabled and the persisted map file is readable. The summary is safe to share in reviews because it does not include the host map path.
+`visor discover` adds `data.map.summary` when Visor enables mapped execution and can read the persisted map file. You can safely share the summary in reviews because it does not include the host map path.
 
 | Summary field | Type | Meaning |
 | --- | --- | --- |
@@ -99,12 +100,32 @@ When `visor discover --annotate-current <file|->` succeeds, `data.annotation` co
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `screen_applied` | boolean | Whether screen semantics were applied |
+| `screen_applied` | boolean | Whether Visor applied screen semantics |
 | `actions_inserted` | number | Standalone actions newly stored |
 | `actions_updated` | number | Existing semantic actions changed |
 | `actions_merged` | number | Source-derived actions enriched while retaining execution metadata |
 
-The same response includes `data.screen.variant_id` and `data.screen.screen_id`. Annotation is applied before `data.crawl` when both options are used.
+The same response includes `data.screen.variant_id` and `data.screen.screen_id`. Visor applies annotation before `data.crawl` when you use both options.
+
+`data.observation_token` identifies the exact discovery observation. Pass it back with `--observation-token` to annotate without another device source read. `data.memory` contains the compact current-screen slice, relevant routes, and semantic gaps.
+
+## Route result
+
+`visor route` returns these fields in `data`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `action` | string | Always `route` |
+| `status` | string | `completed`, `failed`, or `needs_discovery` |
+| `goal` | string | Semantic plan goal |
+| `selected_path` | string | Path that completed, when successful |
+| `attempts` | array | Ordered path attempts and typed step outcomes |
+| `checkpoint_path` | string | Atomic checkpoint with the plan, attempts, current observation token, and resume position |
+| `current_screen` | object | Compact final screen after success |
+| `rediscovery` | object | Exact observation token and compact unknown-state context |
+| `recovery` | object | Prior attempts when the daemon recreated a dropped Appium session |
+
+Each step reports `success`, `runtime_failure`, or `verification_failure`. A path reports `completed`, `failed`, or `skipped`.
 
 ## Assertion result
 

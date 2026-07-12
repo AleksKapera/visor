@@ -19,6 +19,7 @@ These inputs are accepted globally and, where relevant, by individual commands.
 | `format` | `text` or `json` |
 | `server-url` | Appium server URL |
 | `app-id` | Android app package or iOS bundle identifier; on iOS it must match an installed app on the selected target |
+| `map-dir` | Explicit directory for the runtime index, compact agent memory, and route checkpoints |
 | `attach` | Attach to an already running app process when possible |
 | `no-map` | Disable app-map reads and writes for this command |
 | `repair` | Allow opt-in exploratory app-map repair after a missing or stale route |
@@ -32,7 +33,7 @@ Important notes:
 
 ## Mapped execution
 
-Mapped execution is enabled by default for direct action commands and scenario runs. Visor observes lightweight UI source around target actions, stores a schema-versioned host-machine app map under `.visor/maps`, and can reuse confirmed navigation edges when a later command targets a known screen from a different current screen.
+Visor enables mapped execution by default for direct action commands and scenario runs. It observes lightweight UI source around target actions, stores a schema-versioned host-machine app map under `.visor/maps`, and can reuse confirmed navigation edges when a later command targets a known screen from a different current screen.
 
 Use `--no-map` or `VISOR_NO_MAP=true` when you need raw Appium behavior. No-map mode disables both map reads and map writes.
 
@@ -233,6 +234,7 @@ Optional runtime inputs:
 - `device`
 - `server-url`
 - `app-id`
+- `map-dir`
 - `attach`
 - `no-map`
 - `crawl`
@@ -241,11 +243,12 @@ Optional runtime inputs:
 - `crawl-include`
 - `crawl-allow-risky`
 - `annotate-current`
+- `observation-token`
 
-Use `--crawl` to explore safe controls from the current screen and record app-map edges. Crawling is bounded by `--crawl-depth` and `--crawl-limit`.
+Use `--crawl` only when you explicitly want diagnostic programmatic exploration. Crawling is bounded by `--crawl-depth` and `--crawl-limit`; the agent discovery workflow does not run it by default.
 Use `--crawl-include <text>` and `--crawl-allow-risky` on sandbox/dev builds when you intentionally want the crawler to include otherwise risky controls such as delete, logout, purchase, or confirm surfaces.
 
-Use `--annotate-current <file|->` to observe the current screen and merge semantic screen/action descriptions into that same observed variant. Pass a UTF-8 JSON file or `-` for one JSON value from standard input. Annotation input is validated before device selection or daemon work, and the update is applied before an optional crawl changes app state.
+Use `--annotate-current <file|->` to merge semantic screen/action descriptions into an observed variant. Pass a UTF-8 JSON file or `-` for one JSON value from standard input. Add `--observation-token <token>` to annotate the exact prior discovery without another source read. Visor validates annotation input before device selection or daemon work.
 
 ```json
 {
@@ -273,6 +276,8 @@ Response data fields:
 - `map`
 - `map.summary`, when the persisted map can be read
 - `screen`
+- `observation_token`
+- `memory`
 - `annotation`, when `--annotate-current` is used
 - `crawl`, when `--crawl` is used
 
@@ -280,7 +285,32 @@ Response data fields:
 
 `map.summary` is a path-free inventory of the persisted app map for review: schema version, identity, app id, platform, screen count, variant count, edge count, authentication-required variant count, and last update time.
 
-Persisted variants include source-derived `items` for review and replay tooling, plus `exit_recipes` for visible back/close/dismiss/done controls when coordinates are available.
+`map.agent_path` points to the compact AI-only memory. `map.path` points to Visor's internal runtime index.
+
+### `route`
+
+Purpose: execute one deterministic, agent-authored multi-path route through a single daemon request.
+
+Required input:
+
+- plan file path, or `-` to read JSON from standard input
+
+Runtime inputs:
+
+- `device`
+- `server-url`
+- `app-id`
+- `attach`
+- `map-dir`
+
+The plan requires a semantic `goal` and at least one ordered path. Every step requires `safety: "safe"`, a supported action command, arguments, and an expected screen plus executable selector. Visor rejects unsafe plans before device work.
+
+Visor tries eligible paths in document order. It checkpoints each step and returns after the first completed path. When no path can recover an unexpected state, it returns `status: "needs_discovery"` with compact rediscovery context.
+
+```bash
+visor route /tmp/settings-route.json \
+  --device <id> --app-id com.example.app --attach --map-dir /tmp/visor-map
+```
 
 ### `record`
 
@@ -373,7 +403,7 @@ For Appium-backed scenario runs, run `visor start` first.
 
 For deterministic local development checks, pass `--runtime local`. This runs the scenario against Visor's local fixture runtime, writes normal reports and artifacts, and does not require Appium, a daemon, an emulator, a simulator, or a real app.
 
-When mapped execution is enabled, the run also includes map metadata and any hidden route or repair decisions in step details.
+When Visor enables mapped execution, the run also includes map metadata and any hidden route or repair decisions in step details.
 
 ### `benchmark`
 

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  DEFAULT_STARTUP_TIMEOUT_SECONDS,
   injectServerBinding,
   resolveAppiumCommand,
   statusManagedAppium,
@@ -22,6 +23,10 @@ describe('appium lifecycle helpers', () => {
     process.chdir(originalCwd);
     fs.rmSync(tempDir, { recursive: true, force: true });
     delete process.env.VISOR_APPIUM_CMD;
+  });
+
+  it('allows native drivers enough time to load before declaring startup failure', () => {
+    expect(DEFAULT_STARTUP_TIMEOUT_SECONDS).toBe(60);
   });
 
   it('prefers cli override when resolving appium command', () => {

@@ -9,6 +9,7 @@ import {
   DaemonUnavailableError,
   runDaemonAction,
   runDaemonDiscover,
+  runDaemonRoute,
   runDaemonScenario,
   startVisorDaemon,
   statusVisorDaemon,
@@ -18,6 +19,7 @@ import { DeviceSelectionError, resolveRunningDevice } from './devices.js';
 import { makeError } from './errors.js';
 import { LocalRuntimeAdapter } from './localRuntime.js';
 import { writeReports } from './report.js';
+import { parseRoutePlan } from './routePlan.js';
 import { determinismCheck, runScenario } from './runner.js';
 import { COMMAND_NAMES } from './types.js';
 import type {
@@ -339,6 +341,7 @@ const ALL_COMMANDS = new Set<string>([
   'validate',
   'run',
   'discover',
+  'route',
   'benchmark',
   'report',
   'record',
@@ -356,6 +359,7 @@ const GLOBAL_SPEC: Record<string, OptionType> = {
   seed: 'number',
   'server-url': 'string',
   'app-id': 'string',
+  'map-dir': 'string',
   attach: 'boolean',
   'no-map': 'boolean',
   repair: 'boolean',
@@ -399,6 +403,7 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     runtime: 'string',
     'server-url': 'string',
     'app-id': 'string',
+    'map-dir': 'string',
     attach: 'boolean',
     'no-map': 'boolean',
     repair: 'boolean',
@@ -414,6 +419,7 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     format: 'string',
     'server-url': 'string',
     'app-id': 'string',
+    'map-dir': 'string',
     attach: 'boolean',
     'no-map': 'boolean',
     repair: 'boolean',
@@ -422,7 +428,18 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     'crawl-limit': 'number',
     'crawl-include': 'string',
     'crawl-allow-risky': 'boolean',
-    'annotate-current': 'string'
+    'annotate-current': 'string',
+    'observation-token': 'string'
+  },
+  route: {
+    device: 'string',
+    timeout: 'number',
+    format: 'string',
+    'server-url': 'string',
+    'app-id': 'string',
+    'map-dir': 'string',
+    attach: 'boolean',
+    'no-map': 'boolean'
   },
   benchmark: {
     runs: 'number',
@@ -433,6 +450,7 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     format: 'string',
     'server-url': 'string',
     'app-id': 'string',
+    'map-dir': 'string',
     attach: 'boolean',
     'no-map': 'boolean',
     repair: 'boolean',
@@ -452,6 +470,7 @@ const COMMAND_SPECS: Record<string, Record<string, OptionType>> = {
     format: 'string',
     'server-url': 'string',
     'app-id': 'string',
+    'map-dir': 'string',
     attach: 'boolean',
     'no-map': 'boolean',
     repair: 'boolean',
@@ -504,6 +523,7 @@ function helpText(): string {
     '  run <scenario> [--output <dir>] [--runtime appium|local]',
     '  benchmark <scenario> [--runs <n>] [--threshold <percent>]',
     '  discover [--app-id <id>]',
+    '  route <plan.json|-> [--app-id <id>]',
     '  report [path]',
     '  record <name> [--stop|--force|--record-values]',
     '  replay <name> [--param key=value]',
@@ -574,7 +594,7 @@ function commandHelpText(command: string): { usageText: string; examples: string
         'Visor discover',
         '',
         'Usage:',
-        '  visor discover [--app-id <id>] [--annotate-current <file|->] [--crawl] [runtime options]',
+        '  visor discover [--app-id <id>] [--annotate-current <file|->] [--observation-token <token>] [--crawl] [runtime options]',
         '',
         'Options:',
         '  --crawl                   Explore safe controls and record app-map edges',
@@ -583,9 +603,28 @@ function commandHelpText(command: string): { usageText: string; examples: string
         '  --crawl-include <text>    Only crawl controls matching this text',
         '  --crawl-allow-risky       Include risky controls when crawling sandbox/dev builds',
         '  --annotate-current <file|->  Apply JSON semantics to the observed current screen; use - for stdin',
+        '  --observation-token <token>  Apply semantics to an exact prior discovery without reading source again',
         '  --no-map                  Disable app-map reads and writes'
       ].join('\n'),
       examples
+    };
+  }
+
+  if (command === 'route') {
+    return {
+      usageText: [
+        'Visor route',
+        '',
+        'Usage:',
+        '  visor route <plan.json|-> [runtime options]',
+        '',
+        'Executes one validated multi-path plan in a single daemon request.',
+        'Use - to read the route plan from standard input.'
+      ].join('\n'),
+      examples: [
+        'visor route /tmp/account-settings.json --app-id com.example.app',
+        'visor route - --app-id com.example.app'
+      ]
     };
   }
 
@@ -904,6 +943,7 @@ async function resolvedRuntime(options: ParsedOptions): Promise<RuntimeOptions> 
     attach_to_running: Boolean(options.attach),
     map: {
       enabled: !Boolean(options['no-map']),
+      ...(typeof options['map-dir'] === 'string' ? { rootDir: options['map-dir'] } : {}),
       ...(options.repair === true ? { repair: true } : {}),
       ...(options.crawl === true ? { crawl: true } : {}),
       ...(typeof options['crawl-depth'] === 'number' ? { crawlDepth: options['crawl-depth'] } : {}),
@@ -925,6 +965,7 @@ function actionArgs(command: CommandName, options: ParsedOptions): Record<string
     'seed',
     'runtime',
     'app-id',
+    'map-dir',
     'attach',
     'no-map',
     'repair'
@@ -1384,7 +1425,10 @@ export async function cmdDiscover(
       {
         ...runtime.map,
         appId: runtime.app_id,
-        ...(annotation ? { annotation } : {})
+        ...(annotation ? { annotation } : {}),
+        ...(typeof parsed.options['observation-token'] === 'string'
+          ? { annotationToken: parsed.options['observation-token'] }
+          : {})
       }
     );
     const response = envelopeOk(commandId, startedAt, [], 'run');
@@ -1408,6 +1452,107 @@ export async function cmdDiscover(
         : isDaemonTimeout
           ? 'Inspect .visor/daemon/daemon.log and .visor/appium/*.log, then retry or run `visor stop --force` before restarting.'
           : 'Check target app state and retry'
+    );
+    return { code: 1, response };
+  }
+}
+
+export async function cmdRoute(
+  parsed: ParsedCommand,
+  input: CommandExecutionInput = {}
+): Promise<CommandResult> {
+  const commandId = makeId('cmd');
+  const startedAt = utcNowIso();
+  const planPath = parsed.positionals[0];
+  let plan;
+  try {
+    if (typeof planPath !== 'string' || planPath.trim() === '') {
+      throw new Error('Route requires a plan file path or - for standard input');
+    }
+    const source = planPath === '-'
+      ? input.stdin ?? await readStandardInput()
+      : fs.readFileSync(planPath, 'utf8');
+    plan = parseRoutePlan(source);
+  } catch (error) {
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'INPUT_ERROR',
+      'Invalid route plan',
+      errorMessage(error),
+      'Fix the route-plan JSON before contacting the device'
+    );
+    return { code: 1, response };
+  }
+
+  let runtime: RuntimeOptions;
+  try {
+    runtime = await resolvedRuntime(parsed.options);
+  } catch (error) {
+    if (!(error instanceof DeviceSelectionError)) {
+      throw error;
+    }
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      'TARGET_ERROR',
+      'Device selection failed',
+      error.message,
+      'Start one target device or rerun with --device <device-id>'
+    );
+    response.data = { devices: error.devices };
+    return { code: 1, response };
+  }
+
+  try {
+    const result = await runDaemonRoute(
+      {
+        platform: runtime.platform,
+        server_url: runtime.server_url,
+        device: runtime.device,
+        app_id: runtime.app_id,
+        attach_to_running: runtime.attach_to_running
+      },
+      plan,
+      {
+        ...runtime.map,
+        appId: runtime.app_id
+      }
+    );
+    const routeStatus = result.status;
+    if (routeStatus !== 'completed') {
+      const response = envelopeFail(
+        commandId,
+        startedAt,
+        'ACTION_ERROR',
+        routeStatus === 'needs_discovery' ? 'Route needs discovery' : 'Route failed',
+        typeof result.reason === 'string' ? result.reason : `Route ended with status '${String(routeStatus)}'`,
+        routeStatus === 'needs_discovery'
+          ? 'Use data.rediscovery to annotate or add a recovery path, then retry'
+          : 'Inspect data.attempts and retry with a corrected or alternate path'
+      );
+      response.data = result;
+      return { code: 2, response };
+    }
+    const response = envelopeOk(commandId, startedAt, [], 'run');
+    response.data = result;
+    return { code: 0, response };
+  } catch (error) {
+    const isDaemonUnavailable = error instanceof DaemonUnavailableError;
+    const isDaemonTimeout = error instanceof DaemonRequestTimeoutError;
+    const response = envelopeFail(
+      commandId,
+      startedAt,
+      isDaemonUnavailable || isDaemonTimeout ? 'TARGET_ERROR' : 'ACTION_ERROR',
+      isDaemonUnavailable
+        ? 'route requires visor start'
+        : isDaemonTimeout
+          ? 'route timed out waiting for Visor daemon'
+          : 'route failed',
+      errorMessage(error),
+      isDaemonUnavailable
+        ? 'Run `visor start`, verify the target simulator, and retry'
+        : 'Inspect the route attempts and daemon/Appium logs'
     );
     return { code: 1, response };
   }
@@ -1979,6 +2124,9 @@ export async function executeCommand(
   }
   if (parsed.command === 'discover') {
     return cmdDiscover(parsed, input);
+  }
+  if (parsed.command === 'route') {
+    return cmdRoute(parsed, input);
   }
   if (parsed.command === 'benchmark') {
     return cmdBenchmark(parsed);

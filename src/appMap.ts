@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { resolveTapMode } from './adapters.js';
+import type { RoutePlan, RoutePlanPath, RoutePlanStep } from './routePlan.js';
 import type {
   AppMapAnnotation,
   AppMapScreenAnnotation,
@@ -15,7 +16,7 @@ import type {
   Platform,
   PlatformAdapter
 } from './types.js';
-import { canonicalJson, ensureDir, signatureFor, utcNowIso } from './utils.js';
+import { canonicalJson, ensureDir, errorMessage, signatureFor, utcNowIso } from './utils.js';
 
 export const APP_MAP_SCHEMA_VERSION = 1;
 
@@ -166,6 +167,76 @@ interface AppMapFile {
   edges: AppMapEdge[];
 }
 
+interface AgentMemoryAction {
+  command: CommandName;
+  args: Record<string, unknown>;
+  label: string;
+  intent: string;
+  safety: ControlSafety;
+}
+
+interface AgentMemoryScreen {
+  id: string;
+  label?: string;
+  purpose?: string;
+  variants: Array<{
+    id: string;
+    auth_required: boolean;
+    recognize: string[];
+  }>;
+  actions: AgentMemoryAction[];
+}
+
+interface AgentMemoryRoute {
+  from_screen: string;
+  from_variant: string;
+  to_screen: string;
+  to_variant: string;
+  action: {
+    command: CommandName;
+    args: Record<string, unknown>;
+  };
+  expect: {
+    selectors: string[];
+  };
+  reliability: {
+    confidence: number;
+    successes: number;
+    failures: number;
+    stale: boolean;
+  };
+}
+
+interface AgentMemoryFile {
+  schema: 'visor.agent-memory.v1';
+  identity: string;
+  app_id: string;
+  platform: Platform;
+  updated_at: string;
+  screens: AgentMemoryScreen[];
+  routes: AgentMemoryRoute[];
+  gaps: Array<{ screen_id: string; reason: 'needs_semantics' }>;
+}
+
+interface RouteStepAttempt {
+  id: string;
+  command: CommandName;
+  outcome: 'success' | 'runtime_failure' | 'verification_failure';
+  duration_ms: number;
+  expected_screen: string;
+  expected_selector: string;
+  observed_screen_id?: string;
+  observed_variant_id?: string;
+  error?: string;
+}
+
+interface RoutePathAttempt {
+  path_id: string;
+  status: 'completed' | 'failed' | 'skipped';
+  steps: RouteStepAttempt[];
+  reason?: string;
+}
+
 interface ResolvedMapOptions {
   enabled: boolean;
   rootDir: string;
@@ -181,6 +252,7 @@ interface ResolvedMapOptions {
   crawlInclude: string[];
   crawlAllowRisky: boolean;
   annotation?: AppMapAnnotation;
+  annotationToken?: string;
 }
 
 interface AppMapContext {
@@ -347,6 +419,27 @@ const DEFAULT_ACTION_SETTLE_MS = 400;
 const DEFAULT_ACTION_SETTLE_POLL_MS = 400;
 const DEFAULT_CRAWL_SETTLE_MS = 1500;
 const DEFAULT_CRAWL_SETTLE_POLL_MS = 300;
+const AGENT_STRUCTURAL_ROUTE_WORDS = new Set([
+  'account',
+  'activity',
+  'back',
+  'cancel',
+  'close',
+  'continue',
+  'details',
+  'discover',
+  'done',
+  'home',
+  'leaderboard',
+  'menu',
+  'next',
+  'notifications',
+  'portfolio',
+  'profile',
+  'search',
+  'settings',
+  'trades'
+]);
 
 function envNoMap(): boolean {
   const raw = process.env.VISOR_NO_MAP ?? process.env.VISOR_DISABLE_MAP;
@@ -371,7 +464,8 @@ function resolveOptions(platform: Platform, options?: AppMapExecutionOptions): R
       ? unique(options.crawlInclude.map((value) => String(value).trim()).filter(Boolean))
       : [],
     crawlAllowRisky: options?.crawlAllowRisky === true,
-    annotation: options?.annotation
+    annotation: options?.annotation,
+    annotationToken: options?.annotationToken
   };
 }
 
@@ -387,9 +481,23 @@ function mapIdentity(platform: Platform, appId: string): string {
   return `${platform}:${appId}`;
 }
 
+function mapIdentityDigest(identity: string): string {
+  return createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 16);
+}
+
 function mapFilePath(rootDir: string, identity: string): string {
-  const digest = createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 16);
-  return path.join(ensureDir(rootDir), `${digest}.json`);
+  return path.join(ensureDir(rootDir), `${mapIdentityDigest(identity)}.json`);
+}
+
+function agentMemoryFilePath(rootDir: string, identity: string): string {
+  return path.join(ensureDir(path.join(rootDir, 'agent')), `${mapIdentityDigest(identity)}.json`);
+}
+
+function routeCheckpointFilePath(rootDir: string, identity: string): string {
+  return path.join(
+    ensureDir(path.join(rootDir, 'agent')),
+    `${mapIdentityDigest(identity)}.route-checkpoint.json`
+  );
 }
 
 function newMap(platform: Platform, appId: string): AppMapFile {
@@ -421,6 +529,7 @@ function readMap(filePath: string, platform: Platform, appId: string): LoadedApp
     let enrichedActions = false;
     let enrichedItems = false;
     let enrichedExitRecipes = false;
+    let scrubbedTransportArgs = false;
     for (const variant of parsed.variants) {
       if (!Array.isArray(variant.actions)) {
         variant.actions = actionAffordancesForElements(variant.elements);
@@ -435,21 +544,188 @@ function readMap(filePath: string, platform: Platform, appId: string): LoadedApp
         enrichedExitRecipes = true;
       }
     }
+    for (const edge of parsed.edges) {
+      if (Object.prototype.hasOwnProperty.call(edge.args, 'map-dir')) {
+        delete edge.args['map-dir'];
+        scrubbedTransportArgs = true;
+      }
+    }
     parsed.edges = parsed.edges.filter((edge) => !isValueBearingAction(edge.command, edge.args));
     return {
       map: parsed,
-      scrubbed: parsed.edges.length !== originalEdgeCount || enrichedActions || enrichedItems || enrichedExitRecipes
+      scrubbed:
+        parsed.edges.length !== originalEdgeCount ||
+        enrichedActions ||
+        enrichedItems ||
+        enrichedExitRecipes ||
+        scrubbedTransportArgs
     };
   } catch {
     return { map: newMap(platform, appId), scrubbed: false };
   }
 }
 
-function writeMap(filePath: string, map: AppMapFile): void {
+function writeJsonAtomically(filePath: string, value: unknown): void {
   ensureDir(path.dirname(filePath));
   const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(map, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   fs.renameSync(tempPath, filePath);
+}
+
+function writeMap(filePath: string, map: AppMapFile): void {
+  writeJsonAtomically(filePath, map);
+}
+
+function writeAgentMemory(filePath: string, memory: AgentMemoryFile): void {
+  writeJsonAtomically(filePath, memory);
+}
+
+function writeRouteCheckpoint(filePath: string, checkpoint: Record<string, unknown>): void {
+  writeJsonAtomically(filePath, checkpoint);
+}
+
+function agentSafeText(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 100) {
+    return false;
+  }
+  if (/[$€£¥%]/.test(trimmed) || /(^|\s)@\w+/.test(trimmed)) {
+    return false;
+  }
+  const digits = trimmed.match(/\d/g)?.length ?? 0;
+  return digits <= Math.max(2, Math.floor(trimmed.length / 3));
+}
+
+function compactAction(action: AppMapAction): AgentMemoryAction | null {
+  const target = typeof action.args.target === 'string' ? action.args.target : action.target;
+  if (target && !agentSafeRouteText(target)) {
+    return null;
+  }
+  if (!agentSafeRouteText(action.label) || !agentSafeText(action.intent)) {
+    return null;
+  }
+  return {
+    command: action.command,
+    args: sanitizedAnnotationArgs(action.command, action.args),
+    label: redactLabel(action.label),
+    intent: redactLabel(action.intent),
+    safety: action.safety
+  };
+}
+
+function agentSafeRouteText(value: string): boolean {
+  const unwrapped = value.replace(/^(?:text~?=|accessibility=|id=)/, '').trim();
+  if (!agentSafeText(unwrapped) || /\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b/.test(unwrapped)) {
+    return false;
+  }
+  const words = unwrapped.split(/\s+/).filter(Boolean);
+  const looksLikeFullName =
+    words.length >= 2 &&
+    words.every((word) => /^[A-Z][a-z'’-]+$/.test(word)) &&
+    !words.some((word) => AGENT_STRUCTURAL_ROUTE_WORDS.has(word.toLowerCase()));
+  return !looksLikeFullName;
+}
+
+function agentSafeArgs(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return agentSafeRouteText(value);
+  }
+  if (Array.isArray(value)) {
+    return value.every(agentSafeArgs);
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).every(agentSafeArgs);
+  }
+  return true;
+}
+
+function agentMemoryForMap(map: AppMapFile): AgentMemoryFile {
+  const screens = map.screens.map((screen) => {
+    const variants = screen.variant_ids
+      .map((variantId) => map.variants.find((variant) => variant.id === variantId))
+      .filter((variant): variant is AppMapVariant => Boolean(variant));
+    const actions = variants
+      .flatMap((variant) => variant.actions)
+      .map(compactAction)
+      .filter((action): action is AgentMemoryAction => Boolean(action));
+    const deduplicatedActions = Array.from(
+      new Map(actions.map((action) => [actionIdentity(action.command, action.args), action])).values()
+    );
+    return {
+      id: screen.id,
+      ...(screen.label ? { label: redactLabel(screen.label) } : {}),
+      ...(screen.purpose ? { purpose: redactLabel(screen.purpose) } : {}),
+      variants: variants.map((variant) => ({
+        id: variant.id,
+        auth_required: variant.auth_required,
+        recognize: unique(
+          map.edges
+            .filter((edge) => edge.to_variant_id === variant.id)
+            .flatMap((edge) => edge.destination_contract.required_targets)
+            .filter(agentSafeRouteText)
+        ).slice(0, 3)
+      })),
+      actions: deduplicatedActions
+    };
+  });
+  const screenByVariant = new Map(
+    map.variants.map((variant) => [variant.id, variant.screen_id])
+  );
+  return {
+    schema: 'visor.agent-memory.v1',
+    identity: map.identity,
+    app_id: map.app_id,
+    platform: map.platform,
+    updated_at: map.updated_at,
+    screens,
+    routes: map.edges.flatMap((edge) => {
+      const args = sanitizedAnnotationArgs(edge.command, edge.args);
+      if (!agentSafeArgs(args)) {
+        return [];
+      }
+      return [{
+        from_screen: screenByVariant.get(edge.from_variant_id) ?? edge.from_variant_id,
+        from_variant: edge.from_variant_id,
+        to_screen: screenByVariant.get(edge.to_variant_id) ?? edge.to_variant_id,
+        to_variant: edge.to_variant_id,
+        action: {
+          command: edge.command,
+          args
+        },
+        expect: {
+          selectors: edge.destination_contract.required_targets.filter(agentSafeRouteText).slice(0, 3)
+        },
+        reliability: {
+          confidence: edge.confidence,
+          successes: edge.successes,
+          failures: edge.failures,
+          stale: edge.stale
+        }
+      }];
+    }),
+    gaps: screens
+      .filter((screen) => !screen.label || !screen.purpose)
+      .map((screen) => ({ screen_id: screen.id, reason: 'needs_semantics' as const }))
+  };
+}
+
+function currentAgentMemorySlice(memory: AgentMemoryFile, variant: AppMapVariant): Record<string, unknown> {
+  const screen = memory.screens.find((candidate) => candidate.id === variant.screen_id);
+  return {
+    schema: memory.schema,
+    current_screen: {
+      id: variant.screen_id,
+      variant_id: variant.id,
+      ...(screen?.label ? { label: screen.label } : {}),
+      ...(screen?.purpose ? { purpose: screen.purpose } : {}),
+      recognize: screen?.variants.find((candidate) => candidate.id === variant.id)?.recognize ?? [],
+      actions: screen?.actions ?? []
+    },
+    routes: memory.routes.filter(
+      (route) => route.from_variant === variant.id || route.to_variant === variant.id
+    ),
+    gaps: memory.gaps
+  };
 }
 
 export function createMapSummary(
@@ -467,6 +743,7 @@ export function createMapSummary(
     repairs: 0,
     schema_version: APP_MAP_SCHEMA_VERSION,
     path: resolved.enabled ? mapFilePath(resolved.rootDir, identity) : undefined,
+    agent_path: resolved.enabled ? agentMemoryFilePath(resolved.rootDir, identity) : undefined,
     identity
   };
 }
@@ -502,11 +779,15 @@ export function persistAppMapContext(context: AppMapContext | null): MapExecutio
   }
 
   context.summary.updated = context.summary.updated || context.changed;
+  const agentPath = agentMemoryFilePath(context.options.rootDir, context.map.identity);
   if (context.changed) {
     context.map.updated_at = utcNowIso();
     writeMap(context.filePath, context.map);
-    context.changed = false;
   }
+  if (context.changed || !fs.existsSync(agentPath)) {
+    writeAgentMemory(agentPath, agentMemoryForMap(context.map));
+  }
+  context.changed = false;
 
   return context.summary;
 }
@@ -1831,6 +2112,65 @@ function recordEdgeSuccess(
     failures: 0,
     stale: false,
     candidate,
+    destination_contract: {
+      variant_id: to.id,
+      required_targets: contractTargets(to),
+      normalized_fingerprint: to.normalized_fingerprint
+    },
+    last_observed_at: utcNowIso()
+  });
+  context.changed = true;
+}
+
+function recordUnexpectedTransition(
+  context: AppMapContext,
+  from: AppMapVariant,
+  to: AppMapVariant,
+  command: CommandName,
+  args: Record<string, unknown>
+): void {
+  if (from.id === to.id) {
+    return;
+  }
+
+  const descriptor = targetDescriptor(command, args);
+  if (descriptor.kind === 'unknown') {
+    return;
+  }
+
+  const matching = context.map.edges.filter(
+    (edge) =>
+      edge.from_variant_id === from.id &&
+      edge.command === command &&
+      String(edge.target ?? '') === String(descriptor.target ?? '')
+  );
+  for (const edge of matching.filter((candidate) => candidate.to_variant_id !== to.id)) {
+    edge.failures += 1;
+    edge.stale = true;
+    edge.confidence = Math.max(0, edge.confidence - 0.2);
+    edge.last_observed_at = utcNowIso();
+    context.changed = true;
+  }
+
+  const existingDestination = matching.find((edge) => edge.to_variant_id === to.id);
+  if (existingDestination) {
+    existingDestination.last_observed_at = utcNowIso();
+    context.changed = true;
+    return;
+  }
+
+  context.map.edges.push({
+    id: `edge_${context.map.edges.length + 1}`,
+    from_variant_id: from.id,
+    to_variant_id: to.id,
+    command,
+    args: structuredClone(args),
+    target: descriptor.target,
+    confidence: 0.25,
+    successes: 0,
+    failures: 0,
+    stale: false,
+    candidate: true,
     destination_contract: {
       variant_id: to.id,
       required_targets: contractTargets(to),
@@ -3174,6 +3514,291 @@ export async function runMappedCommand(
   return { ...details, map: metadata, observation: actionObservationPayload(before, after) };
 }
 
+function routeWaitMatched(result: Record<string, unknown>): boolean {
+  const args = result.args;
+  return Boolean(
+    args &&
+    typeof args === 'object' &&
+    !Array.isArray(args) &&
+    (args as Record<string, unknown>).matched === true
+  );
+}
+
+function routeCheckpoint(
+  context: AppMapContext,
+  plan: RoutePlan,
+  attempts: RoutePathAttempt[],
+  status: 'running' | 'completed' | 'failed' | 'needs_discovery',
+  selectedPath?: string,
+  current?: ObservedVariant,
+  resume?: Record<string, unknown>
+): string {
+  const checkpointPath = routeCheckpointFilePath(context.options.rootDir, context.map.identity);
+  persistAppMapContext(context);
+  writeRouteCheckpoint(checkpointPath, {
+    schema: 'visor.route-checkpoint.v1',
+    goal: plan.goal,
+    status,
+    plan,
+    ...(selectedPath ? { selected_path: selectedPath } : {}),
+    ...(current
+      ? {
+          current: {
+            screen_id: current.variant.screen_id,
+            variant_id: current.variant.id,
+            observation_token: observationToken(context.map, current.variant)
+          }
+        }
+      : {}),
+    ...(resume ? { resume } : {}),
+    updated_at: utcNowIso(),
+    attempts
+  });
+  return checkpointPath;
+}
+
+async function rediscoverRouteState(
+  context: AppMapContext,
+  previous: ObservedVariant | undefined
+): Promise<ObservedVariant | undefined> {
+  try {
+    return await observeCurrentScreen(context);
+  } catch {
+    return previous;
+  }
+}
+
+async function executeRoutePath(
+  context: AppMapContext,
+  plan: RoutePlan,
+  routePath: RoutePlanPath,
+  attempts: RoutePathAttempt[]
+): Promise<{ attempt: RoutePathAttempt; current?: ObservedVariant }> {
+  if (routePath.from) {
+    try {
+      if (!(await context.adapter.exists(routePath.from.selector))) {
+        const skipped: RoutePathAttempt = {
+          path_id: routePath.id,
+          status: 'skipped',
+          steps: [],
+          reason: `Current screen does not match '${routePath.from.selector}'`
+        };
+        attempts.push(skipped);
+        routeCheckpoint(context, plan, attempts, 'running');
+        return { attempt: skipped };
+      }
+    } catch (error) {
+      const failed: RoutePathAttempt = {
+        path_id: routePath.id,
+        status: 'failed',
+        steps: [],
+        reason: `Could not evaluate starting selector: ${errorMessage(error)}`
+      };
+      attempts.push(failed);
+      routeCheckpoint(context, plan, attempts, 'running');
+      return { attempt: failed };
+    }
+  }
+
+  let current = await rediscoverRouteState(context, undefined);
+  const attempt: RoutePathAttempt = {
+    path_id: routePath.id,
+    status: 'completed',
+    steps: []
+  };
+  attempts.push(attempt);
+
+  for (const [stepIndex, step] of routePath.steps.entries()) {
+    const startedAt = Date.now();
+    const before = current;
+    try {
+      await context.adapter[step.command](step.args);
+    } catch (error) {
+      current = plan.rediscover ? await rediscoverRouteState(context, before) : before;
+      attempt.status = 'failed';
+      attempt.reason = errorMessage(error);
+      attempt.steps.push({
+        id: step.id,
+        command: step.command,
+        outcome: 'runtime_failure',
+        duration_ms: Date.now() - startedAt,
+        expected_screen: step.expect.screen,
+        expected_selector: step.expect.selector,
+        ...(current
+          ? {
+              observed_screen_id: current.variant.screen_id,
+              observed_variant_id: current.variant.id
+            }
+          : {}),
+        error: errorMessage(error)
+      });
+      routeCheckpoint(context, plan, attempts, 'running', undefined, current, {
+        next_path_id: plan.paths[plan.paths.indexOf(routePath) + 1]?.id ?? null
+      });
+      return { attempt, current };
+    }
+
+    let matched = false;
+    let waitError: unknown;
+    try {
+      const wait = await context.adapter.wait({
+        for: step.expect.selector,
+        timeout: step.expect.timeout_ms
+      });
+      matched = routeWaitMatched(wait);
+    } catch (error) {
+      waitError = error;
+    }
+    current = await rediscoverRouteState(context, before);
+
+    if (!matched) {
+      if (before && current) {
+        if (before.variant.id !== current.variant.id) {
+          recordUnexpectedTransition(context, before.variant, current.variant, step.command, step.args);
+        } else {
+          const descriptor = targetDescriptor(step.command, step.args);
+          const edge = descriptor.kind === 'unknown'
+            ? undefined
+            : matchingEdge(context.map, before.variant.id, step.command, descriptor.target);
+          if (edge) {
+            demoteEdge(context, edge);
+          }
+        }
+      }
+      attempt.status = 'failed';
+      attempt.reason = waitError
+        ? errorMessage(waitError)
+        : `Expected selector '${step.expect.selector}' did not match`;
+      attempt.steps.push({
+        id: step.id,
+        command: step.command,
+        outcome: 'verification_failure',
+        duration_ms: Date.now() - startedAt,
+        expected_screen: step.expect.screen,
+        expected_selector: step.expect.selector,
+        ...(current
+          ? {
+              observed_screen_id: current.variant.screen_id,
+              observed_variant_id: current.variant.id
+            }
+          : {}),
+        error: attempt.reason
+      });
+      routeCheckpoint(context, plan, attempts, 'running', undefined, current, {
+        next_path_id: plan.paths[plan.paths.indexOf(routePath) + 1]?.id ?? null
+      });
+      return { attempt, current };
+    }
+
+    if (before && current) {
+      recordEdgeSuccess(context, before.variant, current.variant, step.command, step.args, false);
+    }
+    attempt.steps.push({
+      id: step.id,
+      command: step.command,
+      outcome: 'success',
+      duration_ms: Date.now() - startedAt,
+      expected_screen: step.expect.screen,
+      expected_selector: step.expect.selector,
+      ...(current
+        ? {
+            observed_screen_id: current.variant.screen_id,
+            observed_variant_id: current.variant.id
+          }
+        : {})
+    });
+    routeCheckpoint(context, plan, attempts, 'running', undefined, current, {
+      path_id: routePath.id,
+      next_step_index: stepIndex + 1
+    });
+  }
+
+  return { attempt, current };
+}
+
+export async function executeRoutePlan(
+  adapter: PlatformAdapter,
+  plan: RoutePlan,
+  options?: MapExecutionOptions
+): Promise<Record<string, unknown>> {
+  const context = createAppMapContext(adapter, options);
+  if (!context) {
+    return {
+      action: 'route',
+      status: 'failed',
+      goal: plan.goal,
+      reason: 'Deterministic routes require app-map persistence',
+      attempts: []
+    };
+  }
+
+  const attempts: RoutePathAttempt[] = [];
+  let current: ObservedVariant | undefined;
+  for (const routePath of plan.paths) {
+    const result = await executeRoutePath(context, plan, routePath, attempts);
+    current = result.current ?? current;
+    if (result.attempt.status === 'completed') {
+      const checkpointPath = routeCheckpoint(
+        context,
+        plan,
+        attempts,
+        'completed',
+        routePath.id,
+        current,
+        { complete: true }
+      );
+      const memory = agentMemoryForMap(context.map);
+      return {
+        action: 'route',
+        status: 'completed',
+        goal: plan.goal,
+        selected_path: routePath.id,
+        attempts,
+        checkpoint_path: checkpointPath,
+        map: persistAppMapContext(context),
+        ...(current ? { current_screen: currentAgentMemorySlice(memory, current.variant).current_screen } : {})
+      };
+    }
+  }
+
+  if (!current && plan.rediscover) {
+    current = await rediscoverRouteState(context, undefined);
+  }
+  const status = plan.rediscover ? 'needs_discovery' : 'failed';
+  const checkpointPath = routeCheckpoint(
+    context,
+    plan,
+    attempts,
+    status,
+    undefined,
+    current,
+    plan.rediscover ? { requires_discovery: true } : { exhausted: true }
+  );
+  const memory = agentMemoryForMap(context.map);
+  return {
+    action: 'route',
+    status,
+    goal: plan.goal,
+    reason: plan.rediscover
+      ? 'No supplied route path matches the rediscovered current state'
+      : 'All supplied route paths failed or were skipped',
+    attempts,
+    checkpoint_path: checkpointPath,
+    map: persistAppMapContext(context),
+    ...(current
+      ? {
+          rediscovery: {
+            created: current.created,
+            next_action: 'annotate_current',
+            observation_token: observationToken(context.map, current.variant),
+            agent_path: agentMemoryFilePath(context.options.rootDir, context.map.identity),
+            ...currentAgentMemorySlice(memory, current.variant)
+          }
+        }
+      : {})
+  };
+}
+
 function restoreAttemptDiagnostic(
   strategy: string,
   result: 'matched' | 'mismatched' | 'error',
@@ -3759,6 +4384,37 @@ async function crawlAppMap(context: AppMapContext, start: ObservedVariant): Prom
   };
 }
 
+function observationToken(map: AppMapFile, variant: AppMapVariant): string {
+  const digest = createHash('sha256')
+    .update(`${map.identity}:${variant.id}:${variant.fingerprint}`, 'utf8')
+    .digest('hex')
+    .slice(0, 16);
+  return `${variant.id}.${digest}`;
+}
+
+function observedVariantForToken(context: AppMapContext, token: string): ObservedVariant {
+  const separator = token.lastIndexOf('.');
+  if (separator <= 0) {
+    throw new Error('Observation token is malformed');
+  }
+  const variantId = token.slice(0, separator);
+  const variant = context.map.variants.find((candidate) => candidate.id === variantId);
+  if (!variant || observationToken(context.map, variant) !== token) {
+    throw new Error('Observation token is stale or does not belong to this app map');
+  }
+  return {
+    observation: {
+      fingerprint: variant.fingerprint,
+      normalized_fingerprint: variant.normalized_fingerprint,
+      elements: variant.elements,
+      element_keys: variant.element_keys,
+      auth_required: variant.auth_required
+    },
+    variant,
+    created: false
+  };
+}
+
 export async function discoverAppMap(
   adapter: PlatformAdapter,
   options?: AppMapExecutionOptions
@@ -3773,15 +4429,26 @@ export async function discoverAppMap(
   }
 
   try {
-    const observed = await observeCurrentScreen(context);
+    if (context.options.annotationToken && !context.options.annotation) {
+      throw new Error('Observation token requires an annotation');
+    }
+    if (context.options.annotationToken && context.options.crawl) {
+      throw new Error('Observation-token annotation cannot be combined with crawl');
+    }
+    const observed = context.options.annotationToken
+      ? observedVariantForToken(context, context.options.annotationToken)
+      : await observeCurrentScreen(context);
     const annotation = context.options.annotation
       ? applyCurrentAnnotation(context, observed, context.options.annotation)
       : undefined;
     const crawl = context.options.crawl ? await crawlAppMap(context, observed) : undefined;
     const summary = persistAppMapContext(context);
+    const memory = agentMemoryForMap(context.map);
     return {
       action: 'discover',
       map: summary,
+      memory: currentAgentMemorySlice(memory, observed.variant),
+      observation_token: observationToken(context.map, observed.variant),
       ...(annotation ? { annotation } : {}),
       ...(crawl ? { crawl } : {}),
       screen: {
