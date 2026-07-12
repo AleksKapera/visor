@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "identity": "ios:com.example.pre-annotation-map",
+  "app_id": "com.example.pre-annotation-map",
+  "platform": "ios",
+  "created_at": "2026-06-01T00:00:00Z",
+  "updated_at": "2026-06-01T00:01:00Z",
+  "screens": [
+    {
+      "id": "screen_1",
+      "variant_ids": [
+        "variant_1"
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "variant_1",
+      "screen_id": "screen_1",
+      "fingerprint": "legacy-home-fingerprint",
+      "normalized_fingerprint": "legacy-home-normalized-fingerprint",
+      "elements": [
+        {
+          "tag": "Button",
+          "selector": "Settings",
+          "targets": [
+            "Settings",
+            "text=Settings"
+          ],
+          "labels": [
+            "Settings"
+          ],
+          "stable": true,
+          "safety": "safe",
+          "enabled": true,
+          "visible": true,
+          "clickable": false,
+          "x": null,
+          "y": null,
+          "width": null,
+          "height": null
+        }
+      ],
+      "element_keys": [
+        "settings",
+        "text=settings"
+      ],
+      "actions": [
+        {
+          "command": "tap",
+          "intent": "settings",
+          "label": "Settings",
+          "target": "Settings",
+          "args": {
+            "target": "Settings"
+          },
+          "safety": "safe",
+          "source": {
+            "tag": "Button",
+            "x": null,
+            "y": null,
+            "width": null,
+            "height": null
+          }
+        }
+      ],
+      "auth_required": false,
+      "observations": 2,
+      "confidence": 0.7,
+      "last_observed_at": "2026-06-01T00:01:00Z"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_legacy_home_settings",
+      "from_variant_id": "variant_1",
+      "to_variant_id": "variant_1",
+      "command": "tap",
+      "args": {
+        "target": "Settings"
+      },
+      "target": "Settings",
+      "confidence": 0.8,
+      "successes": 1,
+      "failures": 0,
+      "stale": false,
+      "candidate": false,
+      "destination_contract": {
+        "variant_id": "variant_1",
+        "required_targets": [
+          "Settings"
+        ],
+        "normalized_fingerprint": "legacy-home-normalized-fingerprint"
+      },
+      "last_observed_at": "2026-06-01T00:01:00Z"
+    }
+  ]
+}

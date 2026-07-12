@@ -364,6 +364,233 @@ describe('cli app map options', () => {
     );
   });
 
+  it('loads current-screen annotations from a file before discovery', async () => {
+    const annotationPath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'visor-discover-annotation-')),
+      'current-screen.json'
+    );
+    fs.writeFileSync(
+      annotationPath,
+      `${JSON.stringify({
+        screen: {
+          label: 'Checkout shipping address',
+          purpose: 'Collect delivery details before payment'
+        },
+        actions: [
+          {
+            command: 'tap',
+            args: { target: 'text=Continue' },
+            label: 'Continue to payment',
+            intent: 'advance_checkout',
+            safety: 'safe'
+          }
+        ]
+      })}\n`,
+      'utf8'
+    );
+    daemonMock.runDaemonDiscover.mockResolvedValue({
+      action: 'discover',
+      map: { enabled: true, used: false, updated: true, repaired: false, repairs: 0 },
+      annotation: { screen_applied: true, actions_inserted: 1, actions_updated: 0, actions_merged: 0 },
+      screen: { variant_id: 'variant_1' }
+    });
+
+    try {
+      const result = await executeCommand([
+        'discover',
+        '--device',
+        'emulator-5554',
+        '--app-id',
+        'com.example.checkout',
+        '--annotate-current',
+        annotationPath
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.response.data.annotation).toEqual({
+        screen_applied: true,
+        actions_inserted: 1,
+        actions_updated: 0,
+        actions_merged: 0
+      });
+      expect(daemonMock.runDaemonDiscover).toHaveBeenCalledWith(
+        expect.any(Object),
+        {
+          enabled: true,
+          appId: 'com.example.checkout',
+          annotation: {
+            screen: {
+              label: 'Checkout shipping address',
+              purpose: 'Collect delivery details before payment'
+            },
+            actions: [
+              {
+                command: 'tap',
+                args: { target: 'text=Continue' },
+                label: 'Continue to payment',
+                intent: 'advance_checkout',
+                safety: 'safe'
+              }
+            ]
+          }
+        }
+      );
+    } finally {
+      fs.rmSync(path.dirname(annotationPath), { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid annotations before device selection or daemon work', async () => {
+    const annotationDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-invalid-annotation-'));
+    const annotationPath = path.join(annotationDir, 'current-screen.json');
+    fs.writeFileSync(
+      annotationPath,
+      `${JSON.stringify({
+        screen: {
+          label: 'Checkout',
+          purpose: 'Complete checkout',
+          unsupported: true
+        }
+      })}\n`,
+      'utf8'
+    );
+    let deviceCommands = 0;
+    setDeviceCommandRunner(async () => {
+      deviceCommands += 1;
+      return '';
+    });
+
+    try {
+      const result = await executeCommand([
+        'discover',
+        '--app-id',
+        'com.example.checkout',
+        '--annotate-current',
+        annotationPath
+      ]);
+
+      expect(result.code).toBe(1);
+      expect(result.response.error).toMatchObject({
+        code: 'INPUT_ERROR',
+        message: 'Invalid discovery annotation'
+      });
+      expect(result.response.error?.likely_cause).toContain("screen.unsupported");
+      expect(deviceCommands).toBe(0);
+      expect(daemonMock.runDaemonDiscover).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(annotationDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a missing annotation file before device selection', async () => {
+    const missingPath = path.join(os.tmpdir(), `visor-missing-annotation-${Date.now()}.json`);
+    const result = await executeCommand([
+      'discover',
+      '--app-id',
+      'com.example.checkout',
+      '--annotate-current',
+      missingPath
+    ]);
+
+    expect(result.code).toBe(1);
+    expect(result.response.error?.code).toBe('INPUT_ERROR');
+    expect(result.response.error?.likely_cause).toContain('ENOENT');
+    expect(daemonMock.runDaemonDiscover).not.toHaveBeenCalled();
+  });
+
+  it('accepts current-screen annotations from standard input', async () => {
+    daemonMock.runDaemonDiscover.mockResolvedValue({
+      action: 'discover',
+      map: { enabled: true, used: false, updated: true, repaired: false, repairs: 0 },
+      annotation: { screen_applied: true, actions_inserted: 0, actions_updated: 0, actions_merged: 0 },
+      screen: { variant_id: 'variant_1' }
+    });
+
+    const result = await executeCommand(
+      [
+        'discover',
+        '--device',
+        'emulator-5554',
+        '--app-id',
+        'com.example.checkout',
+        '--annotate-current',
+        '-'
+      ],
+      {
+        stdin: `${JSON.stringify({
+          screen: {
+            label: 'Checkout shipping address',
+            purpose: 'Collect delivery details before payment'
+          }
+        })}\n`
+      }
+    );
+
+    expect(result.code).toBe(0);
+    expect(daemonMock.runDaemonDiscover).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        annotation: {
+          screen: {
+            label: 'Checkout shipping address',
+            purpose: 'Collect delivery details before payment'
+          }
+        }
+      })
+    );
+  });
+
+  it('sends annotation and crawl options in the same discovery request', async () => {
+    const annotationDir = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-annotation-crawl-'));
+    const annotationPath = path.join(annotationDir, 'current-screen.json');
+    fs.writeFileSync(
+      annotationPath,
+      `${JSON.stringify({
+        screen: { label: 'Home', purpose: 'Provides app-wide navigation' }
+      })}\n`,
+      'utf8'
+    );
+    daemonMock.runDaemonDiscover.mockResolvedValue({
+      action: 'discover',
+      map: { enabled: true, used: false, updated: true, repaired: false, repairs: 0 },
+      annotation: { screen_applied: true, actions_inserted: 0, actions_updated: 0, actions_merged: 0 },
+      crawl: { enabled: true, actions: 2 },
+      screen: { variant_id: 'variant_1' }
+    });
+
+    try {
+      const result = await executeCommand([
+        'discover',
+        '--device',
+        'emulator-5554',
+        '--app-id',
+        'com.example.home',
+        '--annotate-current',
+        annotationPath,
+        '--crawl',
+        '--crawl-depth',
+        '1',
+        '--crawl-limit',
+        '4'
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(daemonMock.runDaemonDiscover).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          crawl: true,
+          crawlDepth: 1,
+          crawlLimit: 4,
+          annotation: {
+            screen: { label: 'Home', purpose: 'Provides app-wide navigation' }
+          }
+        })
+      );
+    } finally {
+      fs.rmSync(annotationDir, { recursive: true, force: true });
+    }
+  });
+
   it('adds a shareable app-map summary to discover responses without depending on host paths', async () => {
     const mapRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-cli-map-summary-'));
     const mapPath = path.join(mapRoot, 'map.json');

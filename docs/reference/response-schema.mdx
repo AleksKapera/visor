@@ -93,6 +93,19 @@ Direct action commands return this object in `data.map`. Scenario runs return it
 | `auth_required_variants` | number | Count of variants marked as requiring authentication |
 | `updated_at` | string | Last persisted map update timestamp |
 
+## Discovery annotation result
+
+When `visor discover --annotate-current <file|->` succeeds, `data.annotation` confirms the semantic update applied to the variant observed by that command.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `screen_applied` | boolean | Whether screen semantics were applied |
+| `actions_inserted` | number | Standalone actions newly stored |
+| `actions_updated` | number | Existing semantic actions changed |
+| `actions_merged` | number | Source-derived actions enriched while retaining execution metadata |
+
+The same response includes `data.screen.variant_id` and `data.screen.screen_id`. Annotation is applied before `data.crawl` when both options are used.
+
 ## Assertion result
 
 Assertion results are plain objects with these fields:

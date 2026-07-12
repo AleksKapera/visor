@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createAppMapContext, discoverAppMap, runMappedCommand } from '../src/appMap.js';
+import { createAppMapContext, discoverAppMap, mapDebugSnapshot, runMappedCommand } from '../src/appMap.js';
 import { runScenario } from '../src/runner.js';
 import { writeReports } from '../src/report.js';
 import type { AdapterCapability, PlatformAdapter, Scenario } from '../src/types.js';
@@ -140,8 +140,19 @@ class ScreenGraphAdapter implements PlatformAdapter {
   async close(): Promise<void> {}
 }
 
+const temporaryAppMapDirs = new Set<string>();
+
+afterEach(() => {
+  for (const directory of temporaryAppMapDirs) {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+  temporaryAppMapDirs.clear();
+});
+
 function appMapDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'visor-app-map-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'visor-app-map-'));
+  temporaryAppMapDirs.add(directory);
+  return directory;
 }
 
 function scenarioWithTap(target: string): Scenario {
@@ -219,6 +230,25 @@ const graph = {
   },
   advanced: {
     source: '<App><StaticText name="Done" label="Done" /></App>',
+    taps: {}
+  }
+};
+
+const annotatedVariantGraph = {
+  loaded: {
+    source:
+      '<App><Button name="Primary" label="Primary" /><Button name="Secondary" label="Secondary" />' +
+      '<Button name="Loaded action" label="Loaded action" /><Button name="Loaded help" label="Loaded help" /></App>',
+    taps: {}
+  },
+  error: {
+    source:
+      '<App><Button name="Primary" label="Primary" /><Button name="Secondary" label="Secondary" />' +
+      '<Button name="Retry action" label="Retry action" /><Button name="Error help" label="Error help" /></App>',
+    taps: {}
+  },
+  payment: {
+    source: '<App><Button name="Choose card" label="Choose card" /><Button name="Billing help" label="Billing help" /></App>',
     taps: {}
   }
 };
@@ -1246,6 +1276,420 @@ const destructiveRiskyCrawlGraph = {
 };
 
 describe('app map execution', () => {
+  it('annotates the current observed screen and merges source action metadata without executing it', async () => {
+    const mapRoot = appMapDir();
+    const adapter = new ScreenGraphAdapter(graph);
+    const discovery = await discoverAppMap(adapter, {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.annotated',
+      annotation: {
+        screen: {
+          label: 'App home',
+          purpose: 'Provides entry points to the main app areas',
+          description: 'The initial screen after launch',
+          notes: ['Global navigation starts here']
+        },
+        actions: [
+          {
+            command: 'tap',
+            args: { target: 'Settings' },
+            label: 'Open app settings',
+            intent: 'open_settings',
+            safety: 'safe',
+            description: 'Opens configuration controls',
+            notes: ['Safe to inspect']
+          }
+        ]
+      }
+    });
+
+    expect(discovery).toMatchObject({
+      annotation: {
+        screen_applied: true,
+        actions_inserted: 0,
+        actions_updated: 0,
+        actions_merged: 1
+      }
+    });
+    expect(adapter.actions).toEqual(['source:home']);
+
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', 'com.example.annotated') as {
+      screens: Array<Record<string, unknown>>;
+      variants: Array<{ actions: Array<Record<string, unknown>> } & Record<string, unknown>>;
+    };
+    expect(snapshot.screens[0]).toMatchObject({
+      label: 'App home',
+      purpose: 'Provides entry points to the main app areas'
+    });
+    expect(snapshot.variants[0]).toMatchObject({
+      label: 'App home',
+      purpose: 'Provides entry points to the main app areas',
+      description: 'The initial screen after launch',
+      notes: ['Global navigation starts here']
+    });
+    expect(snapshot.variants[0]?.actions[0]).toMatchObject({
+      command: 'tap',
+      args: { target: 'Settings' },
+      label: 'Open app settings',
+      intent: 'open_settings',
+      safety: 'safe',
+      description: 'Opens configuration controls',
+      notes: ['Safe to inspect'],
+      source: { tag: 'Button' }
+    });
+  });
+
+  it('stores unmatched risky actions as ordinary map facts without executing them', async () => {
+    const mapRoot = appMapDir();
+    const adapter = new ScreenGraphAdapter(graph);
+    const discovery = await discoverAppMap(adapter, {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.risky-annotation',
+      annotation: {
+        actions: [
+          {
+            command: 'tap',
+            args: { target: 'text=Delete account' },
+            label: 'Delete account',
+            intent: 'delete_account',
+            safety: 'risky',
+            notes: ['Requires explicit user authorization']
+          }
+        ]
+      }
+    });
+
+    expect(discovery).toMatchObject({
+      annotation: {
+        screen_applied: false,
+        actions_inserted: 1,
+        actions_updated: 0,
+        actions_merged: 0
+      }
+    });
+    expect(adapter.actions).toEqual(['source:home']);
+
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', 'com.example.risky-annotation') as {
+      variants: Array<{ actions: Array<Record<string, unknown>> }>;
+    };
+    expect(snapshot.variants[0]?.actions).toContainEqual({
+      command: 'tap',
+      args: { target: 'text=Delete account' },
+      label: 'Delete account',
+      intent: 'delete_account',
+      safety: 'risky',
+      notes: ['Requires explicit user authorization']
+    });
+    expect(JSON.stringify(snapshot)).not.toMatch(/provenance|matched|agent_supplied/);
+  });
+
+  it('preserves annotations across observations and applies idempotent semantic updates', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.annotation-updates'
+    };
+    const firstAnnotation = {
+      screen: {
+        label: 'App home',
+        purpose: 'Provides entry points to the app'
+      },
+      actions: [
+        {
+          command: 'tap' as const,
+          args: { target: 'Settings' },
+          label: 'Open settings',
+          intent: 'open_settings',
+          safety: 'safe' as const,
+          description: 'Opens configuration controls',
+          notes: ['Global action']
+        }
+      ]
+    };
+
+    await discoverAppMap(new ScreenGraphAdapter(graph), { ...mapOptions, annotation: firstAnnotation });
+    await discoverAppMap(new ScreenGraphAdapter(graph), mapOptions);
+    const update = await discoverAppMap(new ScreenGraphAdapter(graph), {
+      ...mapOptions,
+      annotation: {
+        actions: [
+          {
+            command: 'tap',
+            args: { target: 'Settings' },
+            label: 'Open app settings',
+            intent: 'open_app_settings',
+            safety: 'safe'
+          }
+        ]
+      }
+    });
+    const retry = await discoverAppMap(new ScreenGraphAdapter(graph), {
+      ...mapOptions,
+      annotation: {
+        actions: [
+          {
+            command: 'tap',
+            args: { target: 'Settings' },
+            label: 'Open app settings',
+            intent: 'open_app_settings',
+            safety: 'safe'
+          }
+        ]
+      }
+    });
+
+    expect(update).toMatchObject({
+      annotation: {
+        actions_inserted: 0,
+        actions_updated: 1,
+        actions_merged: 0
+      }
+    });
+    expect(retry).toMatchObject({
+      annotation: {
+        actions_inserted: 0,
+        actions_updated: 0,
+        actions_merged: 0
+      }
+    });
+
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', 'com.example.annotation-updates') as {
+      screens: Array<Record<string, unknown>>;
+      variants: Array<{ actions: Array<Record<string, unknown>> } & Record<string, unknown>>;
+    };
+    expect(snapshot.screens[0]).toMatchObject({
+      label: 'App home',
+      purpose: 'Provides entry points to the app'
+    });
+    expect(snapshot.variants[0]).toMatchObject({
+      label: 'App home',
+      purpose: 'Provides entry points to the app'
+    });
+    expect(snapshot.variants[0]?.actions).toHaveLength(1);
+    expect(snapshot.variants[0]?.actions[0]).toMatchObject({
+      label: 'Open app settings',
+      intent: 'open_app_settings',
+      description: 'Opens configuration controls',
+      notes: ['Global action'],
+      source: { tag: 'Button' }
+    });
+  });
+
+  it('redacts annotation text and removes value-bearing action arguments', async () => {
+    const mapRoot = appMapDir();
+    await discoverAppMap(new ScreenGraphAdapter(privateFormGraph), {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.private-annotation',
+      annotation: {
+        screen: {
+          label: 'Account for person@example.com',
+          purpose: 'Collect contact details for +1 (212) 555-0100',
+          notes: ['Never retain 4111 1111 1111 1111']
+        },
+        actions: [
+          {
+            command: 'act',
+            args: {
+              name: 'type',
+              target: 'Email',
+              value: 'private@example.com'
+            },
+            label: 'Enter person@example.com',
+            intent: 'enter_contact_email',
+            safety: 'needs-input'
+          }
+        ]
+      }
+    });
+
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', 'com.example.private-annotation') as {
+      variants: Array<{ actions: Array<Record<string, unknown>> }>;
+    };
+    const persisted = JSON.stringify(snapshot);
+    expect(persisted).toContain('<redacted-email>');
+    expect(persisted).toContain('<redacted-phone>');
+    expect(persisted).toContain('<redacted-card>');
+    expect(persisted).not.toContain('person@example.com');
+    expect(persisted).not.toContain('private@example.com');
+    expect(persisted).not.toContain('212) 555-0100');
+    expect(persisted).not.toContain('4111 1111 1111 1111');
+    expect(snapshot.variants[0]?.actions).toContainEqual(
+      expect.objectContaining({
+        command: 'act',
+        args: {
+          name: 'type',
+          target: 'Email'
+        },
+        label: 'Enter <redacted-email>'
+      })
+    );
+  });
+
+  it('promotes stable semantics to similar variants but not materially different screens', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.logical-screen'
+    };
+
+    await discoverAppMap(new ScreenGraphAdapter(annotatedVariantGraph, 'loaded'), {
+      ...mapOptions,
+      annotation: {
+        screen: {
+          label: 'Account settings',
+          purpose: 'Configures account preferences'
+        }
+      }
+    });
+    await discoverAppMap(new ScreenGraphAdapter(annotatedVariantGraph, 'error'), mapOptions);
+    await discoverAppMap(new ScreenGraphAdapter(annotatedVariantGraph, 'payment'), mapOptions);
+
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', 'com.example.logical-screen') as {
+      screens: Array<Record<string, unknown>>;
+      variants: Array<Record<string, unknown>>;
+    };
+    expect(snapshot.screens).toHaveLength(2);
+    expect(snapshot.variants).toHaveLength(3);
+    expect(snapshot.variants[0]?.screen_id).toBe(snapshot.variants[1]?.screen_id);
+    expect(snapshot.variants[1]).toMatchObject({
+      label: 'Account settings',
+      purpose: 'Configures account preferences'
+    });
+    expect(snapshot.variants[2]?.screen_id).not.toBe(snapshot.variants[0]?.screen_id);
+    expect(snapshot.variants[2]).not.toHaveProperty('label');
+    expect(snapshot.variants[2]).not.toHaveProperty('purpose');
+  });
+
+  it('keeps conflicting sibling semantics variant-specific instead of overwriting the logical screen', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.variant-specific-semantics'
+    };
+    await discoverAppMap(new ScreenGraphAdapter(annotatedVariantGraph, 'loaded'), {
+      ...mapOptions,
+      annotation: {
+        screen: {
+          label: 'Account settings',
+          purpose: 'Configures account preferences'
+        }
+      }
+    });
+    await discoverAppMap(new ScreenGraphAdapter(annotatedVariantGraph, 'error'), mapOptions);
+    await discoverAppMap(new ScreenGraphAdapter(annotatedVariantGraph, 'error'), {
+      ...mapOptions,
+      annotation: {
+        screen: {
+          label: 'Account settings error',
+          purpose: 'Retry account settings after a failed load'
+        }
+      }
+    });
+
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', 'com.example.variant-specific-semantics') as {
+      screens: Array<Record<string, unknown>>;
+      variants: Array<Record<string, unknown>>;
+    };
+    expect(snapshot.screens).toHaveLength(1);
+    expect(snapshot.screens[0]).toMatchObject({
+      label: 'Account settings',
+      purpose: 'Configures account preferences'
+    });
+    expect(snapshot.variants[0]).toMatchObject({
+      label: 'Account settings',
+      purpose: 'Configures account preferences'
+    });
+    expect(snapshot.variants[1]).toMatchObject({
+      label: 'Account settings error',
+      purpose: 'Retry account settings after a failed load'
+    });
+  });
+
+  it('binds annotations to the initial observation before an optional crawl changes screens', async () => {
+    const mapRoot = appMapDir();
+    const discovery = await discoverAppMap(new ScreenGraphAdapter(graph), {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.annotate-before-crawl',
+      crawl: true,
+      crawlDepth: 1,
+      crawlLimit: 1,
+      crawlSettleMs: 0,
+      annotation: {
+        screen: {
+          label: 'App home',
+          purpose: 'Provides the app entry point'
+        }
+      }
+    });
+
+    expect(discovery).toMatchObject({
+      screen: { variant_id: 'variant_1' },
+      annotation: { screen_applied: true },
+      crawl: { enabled: true, actions: 1 }
+    });
+    const snapshot = mapDebugSnapshot(mapRoot, 'ios', 'com.example.annotate-before-crawl') as {
+      variants: Array<Record<string, unknown>>;
+    };
+    expect(snapshot.variants[0]).toMatchObject({
+      id: 'variant_1',
+      label: 'App home',
+      purpose: 'Provides the app entry point'
+    });
+    expect(snapshot.variants[1]).not.toHaveProperty('label');
+  });
+
+  it('adds annotations to a pre-annotation map without losing existing map records', async () => {
+    const mapRoot = appMapDir();
+    const mapOptions = {
+      enabled: true,
+      rootDir: mapRoot,
+      appId: 'com.example.pre-annotation-map'
+    };
+    const context = createAppMapContext(new ScreenGraphAdapter(graph), mapOptions);
+    expect(context).not.toBeNull();
+    const legacyFixture = fs.readFileSync(
+      new URL('./fixtures/pre-annotation-app-map.json', import.meta.url),
+      'utf8'
+    );
+    fs.writeFileSync(context!.filePath, legacyFixture, 'utf8');
+    const before = JSON.parse(legacyFixture) as {
+      screens: unknown[];
+      variants: unknown[];
+      edges: unknown[];
+    };
+
+    await discoverAppMap(new ScreenGraphAdapter(graph), {
+      ...mapOptions,
+      annotation: {
+        screen: {
+          label: 'App home',
+          purpose: 'Provides the app entry point'
+        }
+      }
+    });
+    const after = mapDebugSnapshot(mapRoot, 'ios', 'com.example.pre-annotation-map') as {
+      screens: Array<Record<string, unknown>>;
+      variants: unknown[];
+      edges: unknown[];
+    };
+
+    expect(after.screens).toHaveLength(before.screens.length);
+    expect(after.variants).toHaveLength(before.variants.length);
+    expect(after.edges).toHaveLength(before.edges.length);
+    expect(after.edges).toContainEqual(expect.objectContaining({ id: 'edge_legacy_home_settings' }));
+    expect(after.screens[0]).toMatchObject({
+      label: 'App home',
+      purpose: 'Provides the app entry point'
+    });
+  });
+
   it('crawls safe controls during discovery so later runs can route through them', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Visor Discovery"
+  short_description: "Map app screens, actions, and safe routes"
+  default_prompt: "Use $visor-discovery to map this mobile app with Visor and report coverage gaps."

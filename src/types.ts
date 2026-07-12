@@ -9,14 +9,43 @@ export type ErrorCode =
 
 export type Platform = 'android' | 'ios';
 
-export type CommandName =
-  | 'tap'
-  | 'navigate'
-  | 'act'
-  | 'scroll'
-  | 'screenshot'
-  | 'wait'
-  | 'source';
+export const COMMAND_NAMES = [
+  'tap',
+  'navigate',
+  'act',
+  'scroll',
+  'screenshot',
+  'wait',
+  'source'
+] as const;
+
+export type CommandName = typeof COMMAND_NAMES[number];
+
+export const MAP_ACTION_SAFETY_VALUES = ['safe', 'needs-input', 'risky', 'unknown'] as const;
+
+export type MapActionSafety = typeof MAP_ACTION_SAFETY_VALUES[number];
+
+export interface AppMapScreenAnnotation {
+  label: string;
+  purpose: string;
+  description?: string;
+  notes?: string[];
+}
+
+export interface AppMapActionAnnotation {
+  command: CommandName;
+  args: Record<string, unknown>;
+  label: string;
+  intent: string;
+  safety: MapActionSafety;
+  description?: string;
+  notes?: string[];
+}
+
+export interface AppMapAnnotation {
+  screen?: AppMapScreenAnnotation;
+  actions?: AppMapActionAnnotation[];
+}
 
 export type CliCommandName = CommandName | 'discover';
 
@@ -116,6 +145,7 @@ export interface MapExecutionOptions {
   crawlSettlePollMs?: number;
   crawlInclude?: string[];
   crawlAllowRisky?: boolean;
+  annotation?: AppMapAnnotation;
 }
 
 export interface AssertionResult {

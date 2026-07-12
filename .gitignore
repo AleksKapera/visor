@@ -46,7 +46,7 @@ Thumbs.db
 # AI
 .claude
 .agents
-skills/
+/skills/
 skills-lock.json
 
 # Visor

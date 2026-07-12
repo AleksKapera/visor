@@ -17,6 +17,7 @@ It stores:
 - app identity
 - screen records and screen variants
 - source-derived labels, selectors, and normalized fingerprints
+- agent-supplied screen labels, purposes, action labels, intents, safety, descriptions, and notes
 - navigation edges and destination contracts
 - confidence, candidate, stale, and failure evidence
 
@@ -48,6 +49,10 @@ Authentication walls are remembered as auth-required states. If the current logg
 ## Controls
 
 Use `visor discover` to explicitly observe the current screen and update the map.
+
+Use `visor discover --annotate-current <file|->` to attach semantic screen and action descriptions to the screen observed by that same command. Stable screen labels and purposes are shared with sufficiently similar variants on the same logical screen; variant descriptions and notes remain specific. Action identity uses the Visor command plus normalized arguments, so repeated input updates an existing action instead of creating a duplicate. When a source action matches, Visor retains its selector, geometry, and scope while merging the semantic fields. Unmatched actions are stored as ordinary map facts without provenance or match markers.
+
+Visor validates annotation JSON before selecting a device or contacting the daemon. Annotation text follows the map's privacy redaction, and typed `act` values are removed before persistence. The response acknowledges the screen update and inserted, updated, or merged action counts.
 
 Use `visor discover --crawl` to explore safe controls from the current screen and record app-map edges before later runs. Crawling is bounded by `--crawl-depth` and `--crawl-limit`.
 
