@@ -1,12 +1,12 @@
 ---
-title: "visor overview"
+title: "Visor overview"
 description: "Give AI agents verified interaction, semantic navigation memory, and evidence from running mobile apps."
 ---
 
-visor lets AI agents operate running mobile apps, remember what they learn, and verify the result against the live UI.
+Visor lets AI agents operate running mobile apps, remember what they learn, and verify the result against the live UI.
 
 <Info>
-  **Nearly 3x faster than live Appium MCP navigation in our head-to-head analysis.**
+  **2.9x faster in one internal four-flow comparison with live Appium MCP navigation.**
   Across four mobile flows, Visor's map-driven execution finished in 249
   seconds versus 723 seconds for the Appium MCP baseline: a 2.9x speedup and 66%
   less execution time. The deepest flow was 5.7x faster, and Visor used 31%
@@ -16,7 +16,9 @@ visor lets AI agents operate running mobile apps, remember what they learn, and 
 The comparison reached the same answers and the same app-state block in both
 approaches. All four Visor route plans replayed on the first try without route
 rediscovery. The shallow, one-tap flow was effectively tied; the largest gains
-appeared as navigation depth increased.
+appeared as navigation depth increased. This was one app and one fixed task set,
+not a general performance guarantee; results will vary with the app, device,
+route depth, and existing map state.
 
 It does six things:
 
@@ -27,9 +29,9 @@ It does six things:
 5. Evaluates assertions against observed UI state.
 6. Persists reports and artifacts so a person or an LLM can review what happened.
 
-## What visor is for
+## What Visor is for
 
-visor is built for cases where code alone is not enough to verify behavior.
+Visor is built for cases where code alone is not enough to verify behavior.
 
 Typical agent-driven use cases:
 
@@ -43,7 +45,7 @@ Typical agent-driven use cases:
 
 ## Product scope
 
-visor currently supports mobile applications only.
+Visor currently supports mobile applications only.
 
 Supported scope today:
 
@@ -63,7 +65,7 @@ The product is organized around a small set of concepts.
 
 | Concept | What it means |
 | --- | --- |
-| Target | The UI element or screen location visor should act on. |
+| Target | The UI element or screen location Visor should act on. |
 | Action | A direct operation such as tap, type, navigate, wait, screenshot, or source capture. |
 | Agent memory | Compact semantic screens, safe actions, routes, reliability, and unresolved gaps. |
 | Route | One or more ordered safe paths executed inside a single daemon request. |
@@ -74,7 +76,7 @@ The product is organized around a small set of concepts.
 
 ## Documentation map
 
-Read the pages in this order if you are new to visor:
+Read the pages in this order if you are new to Visor:
 
 - [Agent setup](/quickstart)
 - [Core concepts](/concepts)
@@ -94,7 +96,7 @@ Use the reference section when you need exact field names, inputs, outputs, or e
 - [Response schema](/reference/response-schema)
 - [Errors and exit codes](/reference/errors-and-exit-codes)
 
-## What visor returns
+## What Visor returns
 
 Every operation returns a structured response envelope.
 

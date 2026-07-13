@@ -1,19 +1,20 @@
 {
   "name": "visor-ai",
   "version": "0.2.12",
-  "description": "Visor CLI for LLM-driven mobile app interaction and artifact capture",
+  "description": "Verified mobile app interaction, semantic navigation, and evidence capture for AI coding agents",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/AleksKapera/visor"
   },
-  "homepage": "https://github.com/AleksKapera/visor",
+  "homepage": "https://www.visorai.dev/docs",
   "bugs": {
     "url": "https://github.com/AleksKapera/visor/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0",
+    "npm": ">=10"
   },
   "bin": {
     "visor": "./dist/main.js"
@@ -41,22 +42,26 @@
     "release:major": "node scripts/release.mjs major"
   },
   "keywords": [
+    "ai",
+    "ai-agents",
     "appium",
     "mobile",
     "automation",
+    "testing",
+    "e2e",
     "webdriverio",
     "ios",
     "android",
     "cli"
   ],
   "dependencies": {
-    "appium": "^2.17.0",
-    "webdriverio": "^9.19.2"
+    "appium": "^3.5.2",
+    "webdriverio": "^9.29.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
-    "appium-uiautomator2-driver": "^4.2.9",
-    "appium-xcuitest-driver": "^9.10.5",
+    "appium-uiautomator2-driver": "^8.1.0",
+    "appium-xcuitest-driver": "^11.17.6",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.8"

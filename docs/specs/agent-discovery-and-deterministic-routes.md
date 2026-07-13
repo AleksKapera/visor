@@ -5,7 +5,7 @@ status: accepted
 
 ## Problem
 
-The original discovery workflow asks Visor to inventory a large UI tree and finish with generic crawling. Real-device testing against Dub showed that this produces noisy, dynamic maps, broad coordinate targets, transitional snapshots, and slow crawls that cannot assign product meaning reliably.
+The original discovery workflow asks Visor to inventory a large UI tree and finish with generic crawling. Real-device testing against a representative development app showed that this produces noisy, dynamic maps, broad coordinate targets, transitional snapshots, and slow crawls that cannot assign product meaning reliably.
 
 Agents need a much smaller memory that answers four questions:
 
@@ -115,4 +115,4 @@ Runtime failures do not reduce locator confidence. Verification failures affect 
 5. Unknown state without recovery: Visor returns `needs_discovery` with compact current-screen context instead of throwing an opaque error.
 6. Runtime failure: Visor returns a typed partial result without lowering locator confidence.
 7. Unsafe step: Visor rejects the plan before touching the device.
-8. Real iPhone: all scenarios above that the Dub development app can represent run against the iPhone 17 Pro simulator, with no fake-E2E claim substituted for Appium proof.
+8. Real iPhone: all scenarios that the representative development app can express run against a booted iOS simulator, with no fake-E2E claim substituted for Appium proof.

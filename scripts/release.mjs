@@ -42,7 +42,7 @@ try {
   ensureCleanWorktree('before verification');
 
   console.log('Running release checks...');
-  run('npm', ['run', 'check']);
+  run('npm', ['run', 'verify']);
 
   ensureCleanWorktree('after verification');
 

@@ -1,6 +1,6 @@
 ---
 title: "Core concepts"
-description: "Learn the terms and execution model that define how visor works."
+description: "Learn the terms and execution model that define how Visor works."
 ---
 
 This page defines the concepts used across the rest of the documentation.
@@ -20,7 +20,7 @@ A Visor-enabled agent follows this model:
 
 ### Runtime target
 
-A runtime target is the environment visor connects to.
+A runtime target is the environment Visor connects to.
 
 A target includes:
 
@@ -84,7 +84,7 @@ Assertions run after all steps have executed.
 
 Important behavior:
 
-- visor does not stop before the assertion phase just because a prior step failed.
+- Visor does not stop before the assertion phase just because a prior step failed.
 - Assertions are evaluated against the current app state at the end of the step sequence.
 - Unsupported assertion types are treated as failures.
 
@@ -124,7 +124,7 @@ A higher score means the scenario behaves more consistently.
 
 ## Reading the results correctly
 
-When you analyze a visor run, separate the result into three layers:
+When you analyze a Visor run, separate the result into these layers:
 
 | Layer | Purpose |
 | --- | --- |

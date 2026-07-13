@@ -1,28 +1,42 @@
 ---
 title: "Platforms and runtime"
-description: "See which platforms visor supports, how runtime resolution works, and which environment variables affect execution."
+description: "See which platforms Visor supports, how runtime resolution works, and which environment variables affect execution."
 ---
 
 ## Supported platforms
 
-visor supports two mobile platforms:
+Visor supports two mobile platforms:
 
 | Platform | Driver stack |
 | --- | --- |
 | Android | Appium with `UiAutomator2` |
 | iOS | Appium with `XCUITest` |
 
-visor is mobile-only today. Web support is not implemented.
+Visor is mobile-only today. Web support is not implemented.
+
+## Requirements
+
+- Node.js 20.19+, 22.12+, or 24+, and npm 10+
+- a booted simulator, emulator, or connected device
+- the target app installed on that device
+- the current Appium 3 driver for your platform
+
+Install `uiautomator2` for Android or `xcuitest` for iOS:
+
+```bash
+npx appium driver install uiautomator2
+npx appium driver install xcuitest
+```
 
 ## Runtime
 
-visor connects to an Appium server and interacts with an actual simulator, emulator, or device.
+Visor connects to an Appium server and interacts with an actual simulator, emulator, or device.
 
 Runtime execution requires:
 
 - a running Visor daemon from `visor start`
 - a booted iOS or Android target
-- installed Node runtime dependencies, including Appium and WebdriverIO
+- installed Node runtime dependencies, including Appium 3 and WebdriverIO
 - a valid app identifier or environment-based fallback
 
 Platform note:
@@ -33,24 +47,24 @@ Platform note:
 
 ## Device selection
 
-visor requires a running device target for runtime commands. Pass `--device` when you know the target identifier:
+Visor requires a running device target for runtime commands. Pass `--device` when you know the target identifier:
 
 ```bash
 visor run checkout-smoke.json --device emulator-5554 --app-id com.example.app
 ```
 
-If you omit `--device`, visor detects running Android devices and booted iOS simulators:
+If you omit `--device`, Visor detects running Android devices and booted iOS simulators:
 
 - Android devices come from `adb devices` entries in the `device` state
 - iOS simulators come from `xcrun simctl list devices booted`
 
-When exactly one target is detected, visor uses it automatically. When multiple targets are detected in an interactive terminal, visor prompts you to choose one. In a non-interactive shell, visor returns a failure envelope and asks you to rerun with `--device`.
+When exactly one target is detected, Visor uses it automatically. When multiple targets are detected in an interactive terminal, Visor prompts you to choose one. In a non-interactive shell, Visor returns a failure envelope and asks you to rerun with `--device`.
 
 The runtime platform is inferred from the selected device. The CLI does not accept `--platform`.
 
 ## Default runtime values
 
-When you do not set an explicit runtime value, visor resolves defaults for non-device settings.
+When you do not set an explicit runtime value, Visor resolves defaults for non-device settings.
 
 | Setting | Default value |
 | --- | --- |
@@ -61,7 +75,7 @@ When you do not set an explicit runtime value, visor resolves defaults for non-d
 
 ## Environment variables
 
-visor reads these runtime settings from environment variables when explicit runtime input is not provided.
+Visor reads these runtime settings from environment variables when explicit runtime input is not provided.
 
 | Environment variable | Purpose |
 | --- | --- |
@@ -77,18 +91,9 @@ visor reads these runtime settings from environment variables when explicit runt
 | `VISOR_NO_MAP` | Disable app-map reads and writes (`true`/`1`/`yes`/`on`) |
 | `VISOR_DISABLE_MAP` | Alias for `VISOR_NO_MAP` |
 
-Legacy `PATF_*` fallbacks are only supported for the mobile runtime variables implemented in the adapter layer:
-
-- `PATF_ANDROID_APP_PACKAGE`
-- `PATF_ANDROID_APP_ACTIVITY`
-- `PATF_IOS_BUNDLE_ID`
-- `PATF_ATTACH_TO_RUNNING`
-
-There is no `PATF_*` fallback for Appium command resolution.
-
 ## Runtime resolution order
 
-For scenario runs and benchmarks, visor resolves runtime settings in this order:
+For scenario runs and benchmarks, Visor resolves runtime settings in this order:
 
 1. explicit runtime input
 2. detected running device target, when `--device` is omitted
@@ -120,7 +125,7 @@ Use `VISOR_APP_MAP_DIR` to move map state, or pass `--no-map` / set `VISOR_NO_MA
 
 ## Attach mode
 
-When you pass `--attach` (or set `VISOR_ATTACH_TO_RUNNING=true`), visor asks Appium to reuse the already running app process instead of launching from scratch.
+When you pass `--attach` (or set `VISOR_ATTACH_TO_RUNNING=true`), Visor asks Appium to reuse the already running app process instead of launching from scratch.
 
 - Android capabilities used: `noReset=true`, `fullReset=false`, `autoLaunch=false`, `dontStopAppOnReset=true`
 - iOS capabilities used: `noReset=true`, `fullReset=false`, `autoLaunch=false`, `shouldTerminateApp=false`, `forceAppLaunch=false`
