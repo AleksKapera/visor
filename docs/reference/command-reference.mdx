@@ -35,6 +35,8 @@ Important notes:
 
 Visor enables mapped execution by default for direct action commands and scenario runs. It observes lightweight UI source around target actions, stores a schema-versioned host-machine app map under `.visor/maps`, and can reuse confirmed navigation edges when a later command targets a known screen from a different current screen.
 
+Agents should follow the repository-installed `visor-discovery` skill: read compact agent memory before visual evidence, use `route` for multi-step navigation, and use `discover` only to name or repair unknown live states. See [Agent memory and deterministic routes](/features/app-map).
+
 Use `--no-map` or `VISOR_NO_MAP=true` when you need raw Appium behavior. No-map mode disables both map reads and map writes.
 
 Exploratory repair is off by default. Use `--repair` when you want Visor to try safe controls after a missing or stale route instead of failing fast.

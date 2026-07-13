@@ -1,9 +1,9 @@
 ---
 title: "visor overview"
-description: "Understand what visor does, what problems it solves, and which parts of the product to read next."
+description: "Give AI agents verified interaction, semantic navigation memory, and evidence from running mobile apps."
 ---
 
-visor gives AI agents direct evidence from running mobile apps.
+visor lets AI agents operate running mobile apps, remember what they learn, and verify the result against the live UI.
 
 <Info>
   **Nearly 3x faster than live Appium MCP navigation in our head-to-head analysis.**
@@ -18,20 +18,24 @@ approaches. All four Visor route plans replayed on the first try without route
 rediscovery. The shallow, one-tap flow was effectively tied; the largest gains
 appeared as navigation depth increased.
 
-It does five things:
+It does six things:
 
 1. Connects to a running iOS or Android app.
-2. Performs real UI actions such as taps, typing, navigation, and waits.
-3. Captures screenshots and UI source from the live app.
-4. Evaluates assertions against the observed UI state.
-5. Persists reports and artifacts so a person or an LLM can review what happened.
+2. Builds compact semantic memory for screens, safe actions, and known routes.
+3. Executes deterministic preferred and recovery paths in one request.
+4. Performs real UI actions and captures targeted evidence from the live app.
+5. Evaluates assertions against observed UI state.
+6. Persists reports and artifacts so a person or an LLM can review what happened.
 
 ## What visor is for
 
 visor is built for cases where code alone is not enough to verify behavior.
 
-Typical use cases:
+Typical agent-driven use cases:
 
+- Discover a new app once, then reuse the resulting semantic map across tasks.
+- Navigate known flows without repeatedly inspecting screenshots or UI source.
+- Recover from unknown screens with exact observation tokens and safe alternate paths.
 - Verify that a UI change actually rendered on screen.
 - Compare before and after state using screenshots and UI source.
 - Run the same scenario repeatedly to measure stability.
@@ -61,6 +65,8 @@ The product is organized around a small set of concepts.
 | --- | --- |
 | Target | The UI element or screen location visor should act on. |
 | Action | A direct operation such as tap, type, navigate, wait, screenshot, or source capture. |
+| Agent memory | Compact semantic screens, safe actions, routes, reliability, and unresolved gaps. |
+| Route | One or more ordered safe paths executed inside a single daemon request. |
 | Scenario | A JSON document that defines a repeatable sequence of steps and optional assertions. |
 | Assertion | A rule checked after the steps finish. Today, visibility is the supported assertion type. |
 | Artifact | A file written during or after execution, such as a screenshot, XML source dump, or summary report. |
@@ -70,8 +76,9 @@ The product is organized around a small set of concepts.
 
 Read the pages in this order if you are new to visor:
 
-- [Getting started](/quickstart)
+- [Agent setup](/quickstart)
 - [Core concepts](/concepts)
+- [Agent memory and deterministic routes](/features/app-map)
 - [Platforms and runtime](/platforms-and-runtime)
 - [Interactions](/features/interactions)
 - [Targeting and selectors](/features/targeting-and-selectors)

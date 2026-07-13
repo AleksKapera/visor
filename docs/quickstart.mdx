@@ -1,175 +1,72 @@
 ---
-title: "Getting started"
-description: "Install visor, check the local requirements, and run your first command."
+title: "Agent setup"
+description: "Paste one prompt into your coding agent to install Visor, add its Navigator agent, and run initial semantic discovery."
 ---
 
-Use this guide to install the TypeScript CLI, confirm it works, and then run a minimal scenario against a mobile runtime.
+Open your mobile app repository in Codex or Claude Code and paste the prompt below. The agent installs Visor locally, adds the portable Visor skill and project-scoped Navigator agents, connects to a running app, and builds the first semantic map.
 
-## Requirements
+```text
+Set up Visor in this mobile app repository and complete the initial agent-driven discovery phase. Do the work instead of only giving me instructions.
 
-Before you install visor, make sure you have:
+Work from the repository root, preserve existing changes, and use the existing package manager when possible.
 
-- Node.js `20` or later
-- `npm`
+1. Verify Node.js 20 or later. If this repository already has a Node package manifest, install `visor-ai@latest` as a local development dependency with its package manager. Otherwise install it into an isolated ignored runtime with `npm install --prefix .visor/runtime visor-ai@latest`. Use the resulting local `visor` binary for every command; do not depend on a global installation.
+2. Install the Visor repository skill for the current agent and other agents that share the canonical project skill directory:
+   `npx --yes skills@latest add AleksKapera/visor --skill visor-discovery --copy --yes`
+   Verify that `.agents/skills/visor-discovery/SKILL.md` and `skills-lock.json` exist. Read that SKILL.md completely now and follow it for the rest of this task.
+3. Locate the installed package and copy its Navigator definitions for both Codex and Claude Code:
+   `VISOR_PACKAGE_DIR="$(node -e 'const path = require("node:path"); process.stdout.write(path.dirname(require.resolve("visor-ai/package.json", { paths: [path.resolve("."), path.resolve(".visor/runtime")] })));')"`
+   `mkdir -p .codex/agents .claude/agents`
+   `test -e .codex/agents/navigator.toml || cp "$VISOR_PACKAGE_DIR/docs/agents/navigator/codex/navigator.toml" .codex/agents/navigator.toml`
+   `test -e .claude/agents/navigator.md || cp "$VISOR_PACKAGE_DIR/docs/agents/navigator/claude-code/navigator.md" .claude/agents/navigator.md`
+   If either destination already exists and differs, preserve its project-specific guidance and merge the Navigator requirements instead of overwriting it blindly. Verify both files exist and read the definition for the active client completely.
+4. Add or merge a short `Mobile device interaction` rule in the repository's root `AGENTS.md` and `CLAUDE.md`: delegate every observation or action on a simulator, emulator, or connected device to the `navigator` agent; the parent agent must not operate the device directly. Preserve all existing repository guidance. If this running client cannot load a newly installed agent until restart, follow its definition inline for this initial run and tell me to restart the client before later device tasks.
+5. Add `.visor/` to `.gitignore` if it is not already ignored. Ensure ignore rules allow the installed skill, `skills-lock.json`, both Navigator definitions, and the root agent-routing guidance to be committed; use precise negations instead of exposing unrelated local agent state. Keep maps and runtime artifacts local.
+6. Inspect the project and local machine to determine whether this run targets iOS or Android. Check installed Appium drivers with the local Appium CLI and install the required `xcuitest` or `uiautomator2` driver if it is missing. Do not replace a working compatible driver unnecessarily.
+7. Find or boot exactly one simulator, emulator, or connected device. Determine the installed app's real bundle id or package id from the project and device. Build or install the app using this repository's normal workflow if needed. Ask me only if the target, app id, authentication state, or a required manual choice cannot be determined safely.
+8. Before interacting with the app, ask me one concise permission question. Ask whether I want: (a) safe-only discovery, (b) scoped discovery with specific allowed or forbidden actions, or (c) full access in this specific test app and account, including risky, destructive, dangerous, and input-dependent actions. Default to safe-only if I do not answer. Also ask how to handle authentication: I can sign in manually, provide a dedicated test account through an approved secret-sharing method, or authorize you to register a new test account. Wait for my answer before app interaction unless I already supplied these choices.
+9. Use `.visor/maps` as the persistent map directory. If it already contains a map, preserve and reuse it; do not delete it. If it is new, confirm that discovery starts without prior map knowledge.
+10. Delegate all remaining device work to Navigator. Start Visor, keep the daemon and app session warm, and use explicit `--device`, `--app-id`, `--attach`, and `--map-dir .visor/maps` values on runtime commands.
+11. Populate the map with the AI-assisted Visor discovery flow. Never run generic `discover --crawl`, even if I grant full access. Run `visor discover`, reason over compact `data.memory`, annotate the exact `data.observation_token` without another device read, choose the next action under the agreed permission policy, execute it, observe the resulting stable state, and annotate it immediately. Repeat screen by screen.
+12. Discover global navigation, reliable back or close behavior, and one representative nested route per major hub. Under safe-only discovery, do not execute `risky`, `needs-input`, or `unknown` actions. Under scoped or full access, execute only what I explicitly authorized and keep the factual risk classification in the map. Execute authorized dangerous or destructive actions directly one at a time and checkpoint immediately; do not disguise them as safe route steps. Use screenshots or UI source only when compact memory is genuinely ambiguous.
+13. If login blocks discovery, pause and use the authentication option I selected. Never guess credentials or persist secrets in annotations, route plans, maps, screenshots, source dumps, or reports. If registration is authorized, create only a test account for this environment.
+14. Verify at least one known safe multi-step or alternate path with a single deterministic `visor route` request. If an unknown state appears, use `needs_discovery`, annotate its exact token, add a safe recovery path, and retry gracefully. Update the map whenever this run uncovers a new or changed screen, action, selector, transition, or recovery route.
+15. Leave the app on a stable known screen and keep the daemon available for the next Navigator task. Finish only after reporting: the agreed permission policy, device and app id, authentication method, installed skill and Navigator paths, map and agent-memory paths, semantic screens and routes learned or updated, route timing/outcomes, recovery attempts, actions exercised by risk class, unresolved gaps, and actions you intentionally did not execute.
 
-For mobile runs, you also need:
-
-- a bootable Appium environment for the selected device platform
-- a booted Android emulator or device, or an iOS simulator or device
-- the app identifier for the app you want visor to launch or attach to
-
-## Install visor
-
-<Steps>
-  <Step title="Install visor from npm">
-
-```bash
-npm install -g visor-ai
+Do not commit or publish changes unless I ask. Tell me which setup files should be committed so future agents inherit the Visor skill and Navigator.
 ```
 
-  </Step>
-  <Step title="Confirm the CLI is available">
+## What the prompt adds
 
-```bash
-visor --help
-```
+The setup keeps two kinds of state in your repository:
 
-This installs the `visor` CLI entry point and the runtime dependencies published with the `visor-ai` package.
+- `.agents/skills/visor-discovery/` and `skills-lock.json` are shareable operating instructions.
+- `.codex/agents/navigator.toml` and `.claude/agents/navigator.md` define the same device-specialist role for both clients.
+- Root `AGENTS.md` and `CLAUDE.md` tell parent agents to delegate every mobile device operation to Navigator.
+- `.visor/` contains private local maps, checkpoints, and runtime state. Keep it ignored and do not commit it.
 
-  </Step>
-  <Step title="Alternative: run from a source checkout">
-
-```bash
-npm install
-npm run build
-node dist/main.js --help
-```
-
-  </Step>
-</Steps>
-
-## Run your first command
-
-Create a minimal scenario file named `checkout-smoke.json`:
-
-```json
-{
-  "meta": {
-    "name": "checkout-smoke",
-    "version": "1"
-  },
-  "config": {
-    "timeoutMs": 15000,
-    "seed": 42,
-    "artifactsDir": "./artifacts"
-  },
-  "steps": [
-    {
-      "id": "s1",
-      "command": "screenshot",
-      "args": {
-        "label": "app-opened"
-      }
-    }
-  ],
-  "assertions": [],
-  "output": {
-    "report": ["summary", "json", "junit", "html"]
-  }
-}
-```
-
-Then validate it with:
-
-```bash
-visor validate checkout-smoke.json
-```
-
-If you are running from a source checkout instead of a global install, replace `visor` with `node dist/main.js`.
-
-Expected result:
-
-- the top-level `status` is `ok`
-- `data.valid` is `true`
-- `data.issues` is an empty list
-
-This verifies that your installation works and that visor can parse the scenario correctly.
-
-The `output.report` field in the example is accepted by the schema, but the current report writer always emits the standard report set regardless of that list.
-
-## Run the local development E2E harness
-
-From a source checkout, you can run a deterministic scenario without a mobile device:
-
-```bash
-npm run verify
-```
-
-For only the local E2E layer, run:
-
-```bash
-npm run test:e2e:local
-```
-
-This uses `visor run scenarios/local-fake-smoke.json --runtime local` under the hood. It writes normal run reports and checks that expected report files, screenshots, and UI source artifacts exist.
-
-## Run your first scenario
-
-Once validation passes, start the runtime daemon:
-
-```bash
-visor start --server-url http://127.0.0.1:4723
-```
-
-Then execute the same scenario:
-
-```bash
-visor run checkout-smoke.json --app-id com.example.app --output artifacts-test
-```
-
-visor writes a run directory under `artifacts-test/<run-id>/` with files such as:
-
-- `summary.txt`
-- `summary.json`
-- `junit.xml`
-- `timeline.log`
-- `report.html`
-- copied artifacts under `screenshots/` and `sources/`
-
-## Choose a target
-
-When you need a specific app or device, add runtime inputs:
-
-```bash
-visor run checkout-smoke.json \
-  --device emulator-5554 \
-  --app-id com.example.app
-```
-
-If you omit `--device`, visor detects running Android devices and booted iOS simulators. When more than one target is available, visor prompts you to choose one.
-
-Runtime commands require the Visor daemon started by `visor start`. Use `visor status` to inspect the daemon and Appium state, and `visor stop` when you are done.
+Commit the skill, lock file, Navigator definitions, and root routing guidance with your project. On later tasks, the parent agent delegates device work to Navigator. Navigator reads compact memory first, executes known multi-step navigation as one deterministic route, and repairs the map only when live state exposes new or stale knowledge.
 
 <Warning>
-Runtime execution requires a booted device target and a working Appium environment.
+The initial discovery phase is interactive. The agent must agree on exploration permissions and authentication before it touches the app. Full test access applies only to the exact test environment and account you authorize; it never makes a risky action semantically safe.
 </Warning>
 
 ## Next steps
 
 <CardGroup cols={2}>
+  <Card title="Agent memory and routes" icon="route" href="/features/app-map">
+    Understand how the installed skill reuses semantic memory and repairs unknown paths.
+  </Card>
+
   <Card title="Platforms and runtime" icon="smartphone" href="/platforms-and-runtime">
-    Review runtime defaults, daemon lifecycle behavior, and environment variables.
+    Review device selection, Appium ownership, attach mode, and environment variables.
   </Card>
 
-  <Card title="Scenarios" icon="list-checks" href="/features/scenarios">
-    Learn how scenario files are structured and how visor validates them.
-  </Card>
-
-  <Card title="Artifacts and reports" icon="folder-open" href="/features/artifacts-and-reports">
-    See exactly which files visor writes after each run.
+  <Card title="Interactions" icon="hand-pointer" href="/features/interactions">
+    Inspect the direct action primitives available to the agent.
   </Card>
 
   <Card title="Command reference" icon="terminal" href="/reference/command-reference">
-    Inspect every command, flag, and response field.
+    See exact commands, options, responses, and exit behavior.
   </Card>
 </CardGroup>
