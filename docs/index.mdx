@@ -5,6 +5,19 @@ description: "Give AI agents verified interaction, semantic navigation memory, a
 
 visor lets AI agents operate running mobile apps, remember what they learn, and verify the result against the live UI.
 
+<Info>
+  **Nearly 3x faster than live Appium MCP navigation in our head-to-head analysis.**
+  Across four mobile flows, Visor's map-driven execution finished in 249
+  seconds versus 723 seconds for the Appium MCP baseline: a 2.9x speedup and 66%
+  less execution time. The deepest flow was 5.7x faster, and Visor used 31%
+  fewer execution tokens overall.
+</Info>
+
+The comparison reached the same answers and the same app-state block in both
+approaches. All four Visor route plans replayed on the first try without route
+rediscovery. The shallow, one-tap flow was effectively tied; the largest gains
+appeared as navigation depth increased.
+
 It does six things:
 
 1. Connects to a running iOS or Android app.
