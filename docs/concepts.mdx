@@ -5,16 +5,16 @@ description: "Learn the terms and execution model that define how visor works."
 
 This page defines the concepts used across the rest of the documentation.
 
-## Execution model
+## Agent-driven execution model
 
-A visor run follows a simple model:
+A Visor-enabled agent follows this model:
 
-1. Resolve the runtime target.
-2. Execute one or more actions against the app.
-3. Capture evidence during those actions.
-4. Evaluate assertions after the steps finish.
-5. Persist artifacts and reports.
-6. Return a structured result envelope.
+1. Resolve one explicit runtime target and keep its daemon session warm.
+2. Read compact semantic memory before requesting visual or source evidence.
+3. Execute a known action or deterministic route.
+4. Observe and annotate an exact token only when the app reaches an unknown state.
+5. Capture targeted evidence and evaluate assertions when verification requires it.
+6. Persist map evidence, artifacts, and structured results.
 
 ## Key concepts
 
@@ -43,6 +43,16 @@ Available actions today:
 - `source`
 
 Each action produces a structured payload. Some actions also write files.
+
+### Agent memory
+
+Agent memory is the compact semantic view of a local app map. It contains named screens, meaningful actions, destination recognizers, route reliability, and unresolved gaps without exposing raw UI trees or dynamic user content.
+
+The agent reads this file before using screenshots or UI source. Visor keeps the larger runtime index separate because the executor needs details that are inefficient and unsafe to place in model context.
+
+### Deterministic route
+
+A deterministic route is an agent-authored plan with one or more ordered safe paths. Each step includes a command, arguments, and an exact destination selector. Visor executes the plan within one daemon request, checkpoints every outcome, and returns `needs_discovery` when no supplied path matches the live state.
 
 ### Scenario
 
@@ -119,6 +129,7 @@ When you analyze a visor run, separate the result into three layers:
 | Layer | Purpose |
 | --- | --- |
 | Envelope | High-level success or failure, timestamps, artifact list, and next action hint. |
+| Agent memory | Compact current screen, safe actions, routes, reliability, and semantic gaps. |
 | Run payload | Per-step results, assertion results, run-level status, determinism signature, and run id. |
 | Files on disk | Screenshots, XML, summaries, JUnit output, environment metadata, and HTML report. |
 

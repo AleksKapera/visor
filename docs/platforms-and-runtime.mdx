@@ -72,6 +72,7 @@ visor reads these runtime settings from environment variables when explicit runt
 | `VISOR_APPIUM_CMD` | Command `visor start` uses when it needs to launch Appium |
 | `VISOR_WEBDRIVER_CONNECTION_TIMEOUT_MS` | WebDriverIO request timeout for Appium calls |
 | `VISOR_WEBDRIVER_CONNECTION_RETRY_COUNT` | WebDriverIO retry count for Appium calls |
+| `VISOR_APPIUM_NEW_COMMAND_TIMEOUT_SECONDS` | Appium driver-session idle timeout; defaults to `600` seconds for agent reasoning |
 | `VISOR_APP_MAP_DIR` | Host directory for persisted app maps |
 | `VISOR_NO_MAP` | Disable app-map reads and writes (`true`/`1`/`yes`/`on`) |
 | `VISOR_DISABLE_MAP` | Alias for `VISOR_NO_MAP` |
@@ -108,7 +109,12 @@ The main resolved values are:
 
 Mapped execution stores local host state under `.visor/maps` by default. The map identity is scoped by platform and app id, so observations from different flows in the same app accumulate into one shared map while Android and iOS maps remain separate.
 
-The persistent map stores schema version, screen variants, source-derived labels, normalized fingerprints, navigation edges, destination contracts, confidence, and stale-path evidence. It does not embed screenshots.
+Visor writes two storage layers:
+
+- a private runtime index with screen variants, source-derived elements, fingerprints, navigation edges, destination contracts, confidence, and stale-path evidence;
+- compact agent memory under `.visor/maps/agent/` with semantic screens, meaningful safe actions, executable recognizers, routes, reliability, and unresolved gaps.
+
+Agents should read the compact path returned as `data.map.agent_path`, not the runtime path returned as `data.map.path`. Neither layer embeds screenshots. Keep the entire `.visor/` directory local and ignored.
 
 Use `VISOR_APP_MAP_DIR` to move map state, or pass `--no-map` / set `VISOR_NO_MAP=true` to disable both reading and writing the map for a run.
 
