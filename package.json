@@ -1,6 +1,6 @@
 {
   "name": "visor-ai",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Verified mobile app interaction, semantic navigation, and evidence capture for AI coding agents",
   "type": "module",
   "license": "MIT",
