@@ -10,7 +10,7 @@ Set up Visor in this mobile app repository and complete the initial agent-driven
 
 Work from the repository root, preserve existing changes, and use the existing package manager when possible.
 
-1. Verify Node.js 20 or later. If this repository already has a Node package manifest, install `visor-ai@latest` as a local development dependency with its package manager. Otherwise install it into an isolated ignored runtime with `npm install --prefix .visor/runtime visor-ai@latest`. Use the resulting local `visor` binary for every command; do not depend on a global installation.
+1. Verify Node.js 20.19+, 22.12+, or 24+, and npm 10+. If this repository already has a Node package manifest, install `visor-ai@latest` as a local development dependency with its package manager. Otherwise install it into an isolated ignored runtime with `npm install --prefix .visor/runtime visor-ai@latest`. Use the resulting local `visor` binary for every command; do not depend on a global installation.
 2. Install the Visor repository skill for the current agent and other agents that share the canonical project skill directory:
    `npx --yes skills@latest add AleksKapera/visor --skill visor-discovery --copy --yes`
    Verify that `.agents/skills/visor-discovery/SKILL.md` and `skills-lock.json` exist. Read that SKILL.md completely now and follow it for the rest of this task.

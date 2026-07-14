@@ -1,9 +1,9 @@
 ---
 title: "Interactions"
-description: "Understand the direct actions visor can perform against a running app and how each one behaves."
+description: "Understand the direct actions Visor can perform against a running app and how each one behaves."
 ---
 
-visor exposes a focused interaction set. Each interaction maps to one action in the runtime adapter.
+Visor exposes a focused interaction set. Each interaction maps to one action in the runtime adapter.
 
 For agent-driven work, treat these commands as execution primitives rather than a discovery strategy. Read compact [agent memory](/features/app-map) first, reuse a verified direct action for one known step, and use one deterministic route for a known multi-step goal. Request screenshot or source only when the map cannot resolve an ambiguity.
 
@@ -27,7 +27,7 @@ This page covers direct interaction actions. Screenshot and source behavior are 
 
 ### Target mode
 
-Use target mode when you want visor to find an element and click it.
+Use target mode when you want Visor to find an element and click it.
 
 Required input:
 
@@ -103,7 +103,7 @@ Optional input:
 
 Behavior:
 
-- if `percent` is omitted, visor defaults it to `70`
+- if `percent` is omitted, Visor defaults it to `70`
 - `direction=down` moves forward down the page
 - `direction=up` moves back up the page
 - Android uses Appium `scrollGesture`

@@ -30,6 +30,7 @@ htmlcov/
 # Runtime artifacts
 artifacts/
 artifacts-*/
+/test.xml
 
 # Local environment files
 .env

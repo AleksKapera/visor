@@ -1,11 +1,11 @@
 ---
 title: "Assertions and determinism"
-description: "Learn how visor evaluates assertions, computes determinism signatures, and scores repeated runs."
+description: "Learn how Visor evaluates assertions, computes determinism signatures, and scores repeated runs."
 ---
 
 ## Assertions
 
-visor currently supports one assertion type.
+Visor currently supports one assertion type.
 
 | Assertion type | Meaning |
 | --- | --- |
@@ -58,7 +58,7 @@ The signature is a SHA-256 hash of a normalized run payload that includes:
 
 Variable artifact paths are removed before hashing so that different run ids do not change the signature by themselves.
 
-Specifically, visor removes `args.path` from step details before computing the hash.
+Specifically, Visor removes `args.path` from step details before computing the hash.
 
 ## Determinism score
 

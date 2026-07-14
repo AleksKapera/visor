@@ -8,7 +8,7 @@ Work from the real repo state. Do not assume a planned harness, CLI option, or s
 
 ## Setup
 
-- Use Node.js 20 or newer.
+- Use Node.js 20.19+, 22.12+, or 24+, and npm 10+.
 - Install dependencies with `npm install`.
 - Run source commands with `npm run dev -- <command>`.
 - Build first when validating the published CLI shape, then run `node dist/main.js <command>`.

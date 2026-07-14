@@ -365,11 +365,11 @@ const nestedDuplicateTextGraph = {
     taps: { Starter: 'starter' }
   },
   starter: {
-    source: '<App><Button name="BABY Portfolio" label="BABY Portfolio" /></App>',
-    taps: { 'text~=BABY': 'baby' }
+    source: '<App><Button name="ALPHA Portfolio" label="ALPHA Portfolio" /></App>',
+    taps: { 'text~=ALPHA': 'alpha-detail' }
   },
-  baby: {
-    source: '<App><StaticText name="BABY" label="BABY" /></App>',
+  'alpha-detail': {
+    source: '<App><StaticText name="ALPHA" label="ALPHA" /></App>',
     taps: {}
   }
 };
@@ -584,7 +584,7 @@ const bottomNavCrawlGraph = {
   }
 };
 
-const premiumInvestorCrawlGraph = {
+const sampleInvestorCrawlGraph = {
   home: {
     source:
       '<App><StaticText name="Three ways to get started" label="Three ways to get started" />' +
@@ -597,18 +597,23 @@ const premiumInvestorCrawlGraph = {
   starter: {
     source:
       '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
-      '<XCUIElementTypeOther name="BABY&#10;Justin Bieber&#10;+190.98%" label="BABY&#10;Justin Bieber&#10;+190.98%" enabled="true" visible="true" accessible="true" x="20" y="220" width="350" height="100" />' +
+      '<XCUIElementTypeOther name="ALPHA&#10;Sample Creator&#10;+42.00%" label="ALPHA&#10;Sample Creator&#10;+42.00%" enabled="true" visible="true" accessible="true" x="20" y="220" width="350" height="100" />' +
       '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
       '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
       '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
-    coordinateTaps: { '48,807': 'home', '124,807': 'starter', '201,807': 'premium', '195,270': 'baby' },
+    coordinateTaps: {
+      '48,807': 'home',
+      '124,807': 'starter',
+      '201,807': 'premium',
+      '195,270': 'alpha-detail'
+    },
     taps: {}
   },
   premium: {
     source:
       '<App><StaticText name="Premium Investments" label="Premium Investments" />' +
       '<Button name="See all&#10;See all" label="See all&#10;See all" x="322" y="319" width="60" height="26" />' +
-      '<XCUIElementTypeOther name="dub Extraordinary X&#10;Capital&#10;$29.9M" label="dub Extraordinary X&#10;Capital&#10;$29.9M" enabled="true" visible="true" accessible="true" x="20" y="350" width="350" height="110" />' +
+      '<XCUIElementTypeOther name="Example Creator&#10;Demo Fund&#10;$1.2M" label="Example Creator&#10;Demo Fund&#10;$1.2M" enabled="true" visible="true" accessible="true" x="20" y="350" width="350" height="110" />' +
       '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
       '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
       '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
@@ -617,7 +622,7 @@ const premiumInvestorCrawlGraph = {
   },
   profile: {
     source:
-      '<App><Button name="Back&#10;@dub.team&#10;Back" label="Back&#10;@dub.team&#10;Back" x="0" y="73" width="300" height="34" />' +
+      '<App><Button name="Back&#10;@sample.creator&#10;Back" label="Back&#10;@sample.creator&#10;Back" x="0" y="73" width="300" height="34" />' +
       '<Button name="Portfolios (15)&#10;Portfolios (15)" label="Portfolios (15)&#10;Portfolios (15)" x="20" y="300" width="160" height="44" />' +
       '<Button name="Trade Activity (106)&#10;Trade Activity (106)" label="Trade Activity (106)&#10;Trade Activity (106)" x="180" y="300" width="180" height="44" /></App>',
     coordinateTaps: { '40,90': 'premium', '270,322': 'activity' },
@@ -625,15 +630,15 @@ const premiumInvestorCrawlGraph = {
   },
   activity: {
     source:
-      '<App><Button name="Back&#10;@dub.team&#10;Back" label="Back&#10;@dub.team&#10;Back" x="0" y="73" width="300" height="34" />' +
-      '<StaticText name="Buy NKE" label="Buy NKE" />' +
-      '<StaticText name="Sell DIS" label="Sell DIS" />' +
+      '<App><Button name="Back&#10;@sample.creator&#10;Back" label="Back&#10;@sample.creator&#10;Back" x="0" y="73" width="300" height="34" />' +
+      '<StaticText name="Buy ABC" label="Buy ABC" />' +
+      '<StaticText name="Sell XYZ" label="Sell XYZ" />' +
       '<Button name="Trade Activity (106)&#10;Trade Activity (106)" label="Trade Activity (106)&#10;Trade Activity (106)" x="180" y="300" width="180" height="44" /></App>',
     coordinateTaps: { '40,90': 'premium' },
     taps: {}
   },
-  baby: {
-    source: '<App><Button name="Back&#10;$BABYBABY&#10;Back" label="Back&#10;$BABYBABY&#10;Back" x="0" y="73" width="300" height="34" /></App>',
+  'alpha-detail': {
+    source: '<App><Button name="Back&#10;$ALPHA&#10;Back" label="Back&#10;$ALPHA&#10;Back" x="0" y="73" width="300" height="34" /></App>',
     coordinateTaps: { '40,90': 'starter' },
     taps: {}
   },
@@ -657,22 +662,22 @@ const virtualBottomNavGraph = {
   starter: {
     source:
       '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
-      '<Button name="BABY Portfolio" label="BABY Portfolio" />' +
+      '<Button name="ALPHA Portfolio" label="ALPHA Portfolio" />' +
       '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
       '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
       '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
     coordinateTaps: { '48,807': 'home', '201,807': 'premium' },
-    taps: { 'text~=BABY': 'baby' }
+    taps: { 'text~=ALPHA': 'alpha-detail' }
   },
-  baby: {
-    source: '<App><Button name="Back&#10;$BABYBABY&#10;Back" label="Back&#10;$BABYBABY&#10;Back" x="0" y="73" width="300" height="34" /></App>',
+  'alpha-detail': {
+    source: '<App><Button name="Back&#10;$ALPHA&#10;Back" label="Back&#10;$ALPHA&#10;Back" x="0" y="73" width="300" height="34" /></App>',
     coordinateTaps: { '40,90': 'starter' },
     taps: {}
   },
   premium: {
     source:
       '<App><StaticText name="Premium Investments" label="Premium Investments" />' +
-      '<XCUIElementTypeOther name="dub Extraordinary X&#10;Capital&#10;$29.9M" label="dub Extraordinary X&#10;Capital&#10;$29.9M" enabled="true" visible="true" accessible="true" x="20" y="430" width="234" height="112" />' +
+      '<XCUIElementTypeOther name="Example Creator&#10;Demo Fund&#10;$1.2M" label="Example Creator&#10;Demo Fund&#10;$1.2M" enabled="true" visible="true" accessible="true" x="20" y="430" width="234" height="112" />' +
       '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
       '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
       '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" /></App>',
@@ -681,15 +686,15 @@ const virtualBottomNavGraph = {
   },
   profile: {
     source:
-      '<App><Button name="Back&#10;@dub.team&#10;Back" label="Back&#10;@dub.team&#10;Back" x="0" y="73" width="300" height="34" />' +
+      '<App><Button name="Back&#10;@sample.creator&#10;Back" label="Back&#10;@sample.creator&#10;Back" x="0" y="73" width="300" height="34" />' +
       '<Button name="Trade Activity (106)&#10;Trade Activity (106)" label="Trade Activity (106)&#10;Trade Activity (106)" x="180" y="300" width="180" height="44" /></App>',
     coordinateTaps: { '40,90': 'premium', '270,322': 'activity' },
     taps: { 'text~=Trade Activity': 'activity' }
   },
   activity: {
     source:
-      '<App><Button name="Back&#10;@dub.team&#10;Back" label="Back&#10;@dub.team&#10;Back" x="0" y="73" width="300" height="34" />' +
-      '<StaticText name="Buy NKE" label="Buy NKE" /></App>',
+      '<App><Button name="Back&#10;@sample.creator&#10;Back" label="Back&#10;@sample.creator&#10;Back" x="0" y="73" width="300" height="34" />' +
+      '<StaticText name="Buy ABC" label="Buy ABC" /></App>',
     coordinateTaps: { '40,90': 'premium' },
     taps: {}
   }
@@ -709,27 +714,27 @@ const incidentalActivityMatchGraph = {
   starter: {
     source:
       '<App><StaticText name="Starter Investments" label="Starter Investments" />' +
-      '<XCUIElementTypeOther name="1&#10;BABY&#10;Justin Bieber&#10;+190.98%&#10;All-Time" label="1&#10;BABY&#10;Justin Bieber&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<XCUIElementTypeOther name="1&#10;ALPHA&#10;Sample Creator&#10;+42.00%&#10;All-Time" label="1&#10;ALPHA&#10;Sample Creator&#10;+42.00%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
       '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
       '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
       '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
       '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
-    coordinateTaps: { '48,807': 'home', '189,708': 'baby', '355,807': 'activity' },
-    taps: { 'text~=BABY': 'baby' }
+    coordinateTaps: { '48,807': 'home', '189,708': 'alpha-detail', '355,807': 'activity' },
+    taps: { 'text~=ALPHA': 'alpha-detail' }
   },
   activity: {
     source:
       '<App><StaticText name="For You" label="For You" />' +
-      '<XCUIElementTypeOther name="1&#10;BABY&#10;Justin Bieber&#10;+190.98%&#10;All-Time" label="1&#10;BABY&#10;Justin Bieber&#10;+190.98%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
+      '<XCUIElementTypeOther name="1&#10;ALPHA&#10;Sample Creator&#10;+42.00%&#10;All-Time" label="1&#10;ALPHA&#10;Sample Creator&#10;+42.00%&#10;All-Time" enabled="true" visible="true" accessible="true" x="7" y="671" width="363" height="74" />' +
       '<Button name="Home&#10;Home" label="Home&#10;Home" x="9" y="787" width="77" height="40" />' +
       '<Button name="Starter&#10;Starter" label="Starter&#10;Starter" x="85" y="787" width="78" height="40" />' +
       '<Button name="Premium&#10;Premium" label="Premium&#10;Premium" x="162" y="787" width="78" height="40" />' +
       '<Button name="Activity&#10;Activity" label="Activity&#10;Activity" x="316" y="787" width="77" height="40" /></App>',
     coordinateTaps: { '48,807': 'home', '124,807': 'starter' },
-    taps: { 'text~=BABY': 'activity-detail' }
+    taps: { 'text~=ALPHA': 'activity-detail' }
   },
-  baby: {
-    source: '<App><StaticText name="BABY" label="BABY" /></App>',
+  'alpha-detail': {
+    source: '<App><StaticText name="ALPHA" label="ALPHA" /></App>',
     taps: {}
   },
   'activity-detail': {
@@ -1999,7 +2004,7 @@ describe('app map execution', () => {
       crawlSettleMs: 0
     };
 
-    const discoveryAdapter = new ScreenGraphAdapter(premiumInvestorCrawlGraph);
+    const discoveryAdapter = new ScreenGraphAdapter(sampleInvestorCrawlGraph);
     const discovery = await discoverAppMap(discoveryAdapter, mapOptions);
 
     expect(discovery).toMatchObject({
@@ -2012,7 +2017,7 @@ describe('app map execution', () => {
       'tap:124,807',
       'source:starter',
       'tap:195,270',
-      'source:baby',
+      'source:alpha-detail',
       'tap:40,90',
       'source:starter',
       'tap:48,807',
@@ -2027,7 +2032,7 @@ describe('app map execution', () => {
       'source:home'
     ]);
 
-    const routedAdapter = new ScreenGraphAdapter(premiumInvestorCrawlGraph);
+    const routedAdapter = new ScreenGraphAdapter(sampleInvestorCrawlGraph);
     const routedRun = await runScenario(
       scenarioWithTap('text~=Trade Activity'),
       routedAdapter,
@@ -2466,7 +2471,7 @@ describe('app map execution', () => {
 
     const starterAdapter = new ScreenGraphAdapter(virtualBottomNavGraph);
     const starterRun = await runScenario(
-      scenarioWithTap('text~=BABY'),
+      scenarioWithTap('text~=ALPHA'),
       starterAdapter,
       'simulator',
       undefined,
@@ -2480,8 +2485,8 @@ describe('app map execution', () => {
       'source:home',
       'tap:124,807',
       'source:starter',
-      'tap:text~=BABY',
-      'source:baby'
+      'tap:text~=ALPHA',
+      'source:alpha-detail'
     ]);
     expect(starterRun.steps[0]?.details.map).toMatchObject({
       routed: true,
@@ -2547,7 +2552,7 @@ describe('app map execution', () => {
 
     const routedAdapter = new ScreenGraphAdapter(incidentalActivityMatchGraph);
     const routedRun = await runScenario(
-      scenarioWithTap('text~=BABY'),
+      scenarioWithTap('text~=ALPHA'),
       routedAdapter,
       'simulator',
       undefined,
@@ -2562,7 +2567,7 @@ describe('app map execution', () => {
       'tap:124,807',
       'source:starter',
       'tap:189,708',
-      'source:baby'
+      'source:alpha-detail'
     ]);
     expect(routedRun.steps[0]?.details.map).toMatchObject({
       routed: true,
@@ -2613,7 +2618,7 @@ describe('app map execution', () => {
     });
   });
 
-  it('learns non-Dub tab destinations for section-relative targets', async () => {
+  it('learns generic tab destinations for section-relative targets', async () => {
     const mapRoot = appMapDir();
     const mapOptions = {
       enabled: true,
@@ -3369,7 +3374,7 @@ describe('app map execution', () => {
       mapOptions
     );
     await runScenario(
-      scenarioWithTap('text~=BABY'),
+      scenarioWithTap('text~=ALPHA'),
       new ScreenGraphAdapter(nestedDuplicateTextGraph, 'starter'),
       'simulator',
       undefined,
@@ -3380,7 +3385,7 @@ describe('app map execution', () => {
 
     const routedAdapter = new ScreenGraphAdapter(nestedDuplicateTextGraph);
     const routedRun = await runScenario(
-      scenarioWithTap('text~=BABY'),
+      scenarioWithTap('text~=ALPHA'),
       routedAdapter,
       'simulator',
       undefined,
@@ -3394,8 +3399,8 @@ describe('app map execution', () => {
       'source:home',
       'tap:Starter',
       'source:starter',
-      'tap:text~=BABY',
-      'source:baby'
+      'tap:text~=ALPHA',
+      'source:alpha-detail'
     ]);
     expect(routedRun.steps[0]?.details.map).toMatchObject({
       routed: true,
